@@ -15,6 +15,12 @@ import {
 import { useProfiles } from '../profiles';
 import { CameraEngine } from '../camera/CameraEngine';
 import { getDiagLogText } from '../utils/diagLog';
+import bundledProfiles from '../../assets/camera-profiles.json';
+import { describeRecipe } from '../profiles/diagnostics';
+import { validateProfileDocument } from '../profiles/validation';
+
+const factoryResult = validateProfileDocument(bundledProfiles);
+const factoryProfiles = factoryResult.success ? factoryResult.document.profiles : [];
 
 export interface CalibrationModalProps {
   readonly visible: boolean;
@@ -48,7 +54,7 @@ function ActionButton({ label, onPress, disabled = false, destructive = false }:
 }
 
 export function CalibrationModal({ visible, onClose, apertureDemoMode = false, onToggleApertureDemo, apertureSideView = false, onToggleApertureSideView }: CalibrationModalProps): React.JSX.Element {
-  const { applyText, clearErrors, document, errors, exportJson, importJson, loading, reload, reset } = useProfiles();
+  const { applyText, clearErrors, document, source, errors, exportJson, importJson, loading, reload, reset } = useProfiles();
   const [text, setText] = useState('');
   const [diagText, setDiagText] = useState<string | null>(null);
   const [engineDiag, setEngineDiag] = useState<string | null>(null);
@@ -91,13 +97,15 @@ export function CalibrationModal({ visible, onClose, apertureDemoMode = false, o
             .filter((lut) => lut !== ''),
         ),
       );
-      const missing = expected.filter((lut) => !d.bundledLuts.includes(lut));
+      const missing = expected.filter((lut) => !d.bundledLuts.includes(lut.replace(/\.cube$/, '')));
       const apertureLine = d.supportsVariableAperture
         ? `variable ƒ/${d.minAperture}–ƒ/${d.maxAperture}`
         : 'fixed (hardware)';
       const lines = [
         `iOS: ${d.osVersion}`,
         `Device: ${d.deviceModel ?? '?'}`,
+        `Renderer: ${d.rendererVersion ?? 'old build'} · ${d.colorContract ?? 'contract not reported'}`,
+        `Input normalizers: ${d.normalizers?.join('; ') ?? 'not reported'}`,
         `Aperture: ${apertureLine}, active ƒ/${d.activeAperture ?? '?'}`,
         `Aperture diag: ${d.apertureDiag ? JSON.stringify(d.apertureDiag) : '(not reported — OLD BUILD without the runtime-discovery fix)'}`,
         `Aperture Demo mode: ${apertureDemoMode ? 'ON' : 'OFF'}`,
@@ -139,6 +147,10 @@ export function CalibrationModal({ visible, onClose, apertureDemoMode = false, o
             Export loads the active JSON into the editor — long-press it to select all and copy.
           </Text>
 
+          <Text selectable style={styles.help}>
+            {`Active source: ${source ?? 'loading'}\n${(document?.profiles ?? []).map(profile => describeRecipe(profile, factoryProfiles.find(entry => entry.id === profile.id))).join('\n')}\nSaved overrides keep their own recipes. Export before resetting to the bundled clean baseline.`}
+          </Text>
+
           <View style={styles.actions}>
             <ActionButton disabled={busy} label="Import JSON" onPress={() => { void run(importJson); }} />
             <ActionButton disabled={busy || document === null} label="Export Current JSON" onPress={handleExport} />
@@ -178,7 +190,7 @@ export function CalibrationModal({ visible, onClose, apertureDemoMode = false, o
             autoCorrect={false}
             multiline
             onChangeText={setText}
-            placeholder={'{\n  "version": 1,\n  "profiles": […]\n}'}
+            placeholder={'{\n  "schemaVersion": 1,\n  "profiles": […]\n}'}
             placeholderTextColor="#777"
             spellCheck={false}
             style={styles.editor}

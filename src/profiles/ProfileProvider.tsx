@@ -21,6 +21,7 @@ export interface ProfilesContextValue {
   readonly currentProfile: CameraProfile | null;
   readonly currentProfileId: string | null;
   readonly document: ProfileDocument | null;
+  readonly source: 'bundled' | 'override' | null;
   readonly loading: boolean;
   readonly errors: readonly string[];
   selectProfile: (profileId: string) => boolean;
@@ -84,12 +85,14 @@ function parseForMerge(text: string): { success: true; shape: 'document' | 'prof
 
 export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Element {
   const [document, setDocument] = useState<ProfileDocument | null>(null);
+  const [source, setSource] = useState<'bundled' | 'override' | null>(null);
   const [currentProfileId, setCurrentProfileId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [errors, setErrors] = useState<readonly string[]>([]);
 
-  const install = useCallback((next: ProfileDocument): void => {
+  const install = useCallback((next: ProfileDocument, nextSource: 'bundled' | 'override'): void => {
     setDocument(next);
+    setSource(nextSource);
     setCurrentProfileId((existing) =>
       existing !== null && next.profiles.some((profile) => profile.id === existing)
         ? existing
@@ -120,14 +123,14 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
       if (file.exists) {
         const result = parseProfileDocument(await file.text());
         if (result.success) {
-          install(result.document);
+          install(result.document, 'override');
           setErrors([]);
           return true;
         }
         loadErrors.push('Saved override is invalid; using bundled profiles.', ...result.errors);
       }
       const fallback = bundledDocument();
-      install(fallback);
+      install(fallback, 'bundled');
       setErrors(loadErrors);
       return true;
     } catch (error: unknown) {
@@ -152,7 +155,7 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
     try {
       // Persist first, so a failed write never replaces the last valid state.
       overrideFile().write(JSON.stringify(result.document, null, 2));
-      install(result.document);
+      install(result.document, 'override');
       setErrors([]);
       return true;
     } catch (error: unknown) {
@@ -165,7 +168,7 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
     try {
       // Persist first, so a failed write never replaces the last valid state.
       overrideFile().write(JSON.stringify(merged, null, 2));
-      install(merged);
+      install(merged, 'override');
       if (selectId !== undefined && merged.profiles.some((profile) => profile.id === selectId)) {
         setCurrentProfileId(selectId);
       }
@@ -238,7 +241,7 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
       const file = overrideFile();
       if (file.exists) file.delete();
       const fallback = bundledDocument();
-      install(fallback);
+      install(fallback, 'bundled');
       setErrors([]);
       return true;
     } catch (error: unknown) {
@@ -295,6 +298,7 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
     currentProfile,
     currentProfileId,
     document,
+    source,
     loading,
     errors,
     selectProfile,
@@ -308,7 +312,7 @@ export function ProfileProvider({ children }: PropsWithChildren): React.JSX.Elem
     reload: load,
     reset,
     clearErrors: () => setErrors([]),
-  }), [applyProfileText, applyText, currentProfile, currentProfileId, document, errors, exportJson, exportProfileJson, importJson, importProfileFile, load, loading, reset, resetProfile, selectProfile]);
+  }), [applyProfileText, applyText, currentProfile, currentProfileId, document, source, errors, exportJson, exportProfileJson, importJson, importProfileFile, load, loading, reset, resetProfile, selectProfile]);
 
   return <ProfilesContext.Provider value={value}>{children}</ProfilesContext.Provider>;
 }

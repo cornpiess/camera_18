@@ -28,6 +28,18 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
   for (const k of ['id','name'] as const) if (typeof v[k] !== 'string' || v[k].trim() === '') e(`${k} must be a non-empty string`);
   if (v.displayName !== undefined && (typeof v.displayName !== 'string' || v.displayName.trim() === '')) e('displayName must be a non-empty string');
   if (v.developmentReference !== undefined && !obj(v.developmentReference)) e('developmentReference must be an object');
+  if (v.passthrough !== undefined && typeof v.passthrough !== 'boolean') e('passthrough must be a boolean');
+  if (v.recipe !== undefined) {
+    if (!obj(v.recipe)) e('recipe must be an object');
+    else {
+      if (typeof v.recipe.version !== 'string' || v.recipe.version.trim() === '') e('recipe.version must be a non-empty string');
+      if (!['approximation', 'candidate', 'measured', 'passthrough'].includes(v.recipe.status as string)) e('recipe.status is unsupported');
+      if (v.recipe.colorContract !== 'camera18-srgb-ci-v1') e('recipe.colorContract is unsupported');
+      if (v.recipe.datasetId !== undefined && (typeof v.recipe.datasetId !== 'string' || v.recipe.datasetId.trim() === '')) e('recipe.datasetId must be a non-empty string');
+      if (v.recipe.status === 'measured' && typeof v.recipe.datasetId !== 'string') e('measured recipes require recipe.datasetId');
+      if (v.recipe.status === 'passthrough' && v.passthrough !== true) e('passthrough recipe requires passthrough=true');
+    }
+  }
   // Optional: the passthrough ORIG profile legitimately has no aperture identity.
   if (v.aperture !== undefined && nums(v.aperture, ['preferred'], 'aperture', e)) {
     if (typeof v.aperture.preferred === 'number' && v.aperture.preferred <= 0) e('aperture.preferred must be greater than zero');
@@ -50,10 +62,13 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
       }
     }
   }
-  nums(v.raw, ['sharpness','detail','localToneMap','luminanceNoiseReduction','colorNoiseReduction'], 'raw', e);
+  if (v.raw !== undefined) nums(v.raw, ['sharpness','detail','localToneMap','luminanceNoiseReduction','colorNoiseReduction'], 'raw', e);
   if (!obj(v.tone)) e('tone must be an object'); else {
     const tone = v.tone;
     ['exposure','contrast','blackPoint'].forEach(k => { if (typeof tone[k] !== 'number' || !Number.isFinite(tone[k])) e(`tone.${k} must be a finite number`); });
+    optNum(tone, 'exposure', 'tone', e, [-5, 5]);
+    optNum(tone, 'contrast', 'tone', e, [0, 4]);
+    optNum(tone, 'blackPoint', 'tone', e, [0, 0.95]);
     optNum(tone, 'exposureBias', 'tone', e, [-5, 5]);
     const curve = tone.curve;
     if (!Array.isArray(curve) || curve.length !== 5) e('tone.curve must contain exactly five [x, y] points (the native tone-curve renderer requires exactly five)');
@@ -74,6 +89,9 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
   if (!obj(v.color)) e('color must be an object'); else {
     const color = v.color;
     ['saturation','temperature','tint'].forEach(k => { if (typeof color[k] !== 'number' || !Number.isFinite(color[k])) e(`color.${k} must be a finite number`); });
+    optNum(color, 'saturation', 'color', e, [0, 4]);
+    optNum(color, 'temperature', 'color', e, [-4500, 5500]);
+    optNum(color, 'tint', 'color', e, [-200, 200]);
     if (color.lut !== undefined && color.lut !== null && typeof color.lut !== 'string') e('color.lut must be a string or null');
     optNum(color, 'lutIntensity', 'color', e, [0, 1]);
     if (color.splitTone !== undefined) {
@@ -87,13 +105,30 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
     }
     if (!obj(color.hueBands)) e('color.hueBands must be an object'); else {
       const hueBands = color.hueBands;
-      HUE_BAND_NAMES.forEach(b => nums(hueBands[b], ['hue','saturation','luminance'], `color.hueBands.${b}`, e));
+      HUE_BAND_NAMES.forEach(b => {
+        const band = hueBands[b];
+        if (nums(band, ['hue','saturation','luminance'], `color.hueBands.${b}`, e)) {
+          optNum(band, 'hue', `color.hueBands.${b}`, e, [-180, 180]);
+          optNum(band, 'saturation', `color.hueBands.${b}`, e, [0, 4]);
+          optNum(band, 'luminance', `color.hueBands.${b}`, e, [0, 4]);
+        }
+      });
     }
   }
   if (!obj(v.texture)) e('texture must be an object'); else {
     nums(v.texture.grain, ['amount','size'], 'texture.grain', e);
     nums(v.texture.vignette, ['amount','radius'], 'texture.vignette', e);
-    nums(v.texture.halation, ['amount','radius'], 'texture.halation', e);
+    if (obj(v.texture.grain)) {
+      optNum(v.texture.grain, 'amount', 'texture.grain', e, [0, 0.2]);
+      // Legacy zero-grain recipes used size=0.3. The native lower clamp is harmless
+      // while disabled; reject silently-clamped sizes when grain actually executes.
+      optNum(v.texture.grain, 'size', 'texture.grain', e, [v.recipe !== undefined && (v.texture.grain.amount as number) > 0 ? 0.5 : 0, 3]);
+    }
+    if (obj(v.texture.vignette)) {
+      optNum(v.texture.vignette, 'amount', 'texture.vignette', e, [0, 0.5]);
+      optNum(v.texture.vignette, 'radius', 'texture.vignette', e, [0.3, 1.5]);
+    }
+    if (v.texture.halation !== undefined) nums(v.texture.halation, ['amount','radius'], 'texture.halation', e);
     optNum(v.texture, 'deharsh', 'texture', e, [0, 1]);
     if (v.texture.starburst !== undefined) {
       nums(v.texture.starburst, ['threshold','strength','length','rays'], 'texture.starburst', e);

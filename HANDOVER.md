@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-10-27 相机模拟干净基线与校准工具
+
+本节优先于下面的历史快照。详见 `docs/相机校准流程.md` 与更新后的 `ARCHITECTURE.md`。
+
+- 八种内置模式全部零额外颗粒；相机颜色配方没有因缺实机数据被随意重调，仍为 approximation。
+- 原生 GPU context / LUT loader / normalizer / renderer 抽为 `CameraProfileRenderer.swift`，podspec 的 glob 自动编译。应用和 macOS 工具共用，不能再往 CameraEngineModule.swift 复制渲染器。
+- Renderer v4：deharsh 改为预览／照片共享，工作空间显式 extended linear sRGB；保留现有 LUT 和 tone 顺序，没有未经像素验证的全面烘焙。颗粒可选且仅成片，当前默认零。
+- `recipe` 版本与来源诊断；旧 override 不覆盖，先导出备份再恢复默认。新配方移除无效 raw/halation/exposureBias 字段，导入仍兼容旧字段。
+- 桌面工具移除旧 WebGL 仿真与预设副本，只编辑／比较原生渲染图。macOS `scripts/native-calibration.sh`：self-test / render / probes；Node `scripts/calibrate-camera.js`：按独立场景拟合候选 LUT 与原生探针评估。没有相机实测数据，不能报告已完成真实还原校准。
+- 物理镜头、光圈、曝光、快门 promise、后台保存、ORIG bytes 直通均不改。历史挂起问题没有整批修复。
+- Swift 编译、原生 self-test、颜色/帧率/内存和真实光圈均待对应 macOS/CI/真机验证。本轮不触发构建。
+
+---
+
 ## 快照：交接时的当前状态（2026-09-20，commit `782d04c`）
 
 - **最新成功构建：TestFlight build 78**（run number 78，commit `fb3076b`）。**build 78 之后代码已前进多轮（`f513925`→`782d04c`：变现上线批 + 顶栏/chip 批 + 全量 review 修复轮，均未出包）**——下一轮出包（TestFlight 或 App Store）都会覆盖这批改动，**必须真机回归「七」的清单**。改动一览：

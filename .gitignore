@@ -39,3 +39,6 @@ Camera18_LUT_V0.zip
 .backup-51-profiles/
 .tmp-*
 .zcode/
+
+# Local/private calibration captures and generated candidates
+calibration-output/
