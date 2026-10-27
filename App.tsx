@@ -644,7 +644,9 @@ function CameraAppScreen(): React.JSX.Element {
   // twice per tick. The native side additionally fingerprints the color payload, so a
   // re-applied unchanged profile no longer rebuilds the compiled color cube at all.
 
-  // Recommended-aperture default (product decision 2026-09-13): SELECTING a camera snaps
+  // Signature aperture is part of the selected camera's optical character.
+  const preferredApertureProfileRef = useRef<string | null>(null);
+  const signatureApplySeqRef = useRef(0);
   // Which mock mode the diag menu forced (null = real hardware). The hardware-readback
   // sync after setAperture must NOT run in mock-variable: capabilities would report the
   // REAL lens's fixed 1.8 and snap the ring away from the chosen stop.
@@ -681,8 +683,59 @@ function CameraAppScreen(): React.JSX.Element {
       .catch(() => {});
   }, []);
 
-  // A profile's recommended aperture is a visual guide, never an automatic
-  // exposure command. Only an explicit ring gesture controls the real iris.
+  /**
+   * SIGNATURE APERTURE (spec §1): the profile's aperture.preferred is a REAL recommended
+   * aperture on a variable lens — clamp to the live hardware range, commit through the
+   * real setAperture, then sync the UI from the hardware readback (the iris may settle
+   * on the nearest physical detent). Fixed lenses never apply it; ORIG has none; in
+   * mock-variable the readback is skipped (capabilities would report the REAL lens).
+   */
+  const applySignatureAperture = useCallback(async (profile: CameraProfile) => {
+    const preferred = profile.aperture?.preferred;
+    if (typeof preferred !== 'number' || !Number.isFinite(preferred) || preferred <= 0) return;
+    if (mockApertureModeRef.current === 'mock-fixed') return;
+    // Live range first (mock-variable overwrites it with the project f/1.48–f/4 range);
+    // the startup capabilities snapshot is only a fallback.
+    const min = apertureRange?.min ?? capabilitiesRef.current?.minAperture ?? preferred;
+    const max = apertureRange?.max ?? capabilitiesRef.current?.maxAperture ?? preferred;
+    const clamped = Math.min(Math.max(preferred, min), max);
+    preferredApertureProfileRef.current = profile.id;
+    const seq = ++signatureApplySeqRef.current;
+    const settleSeq = apertureSettleSeqRef.current;
+    try {
+      await CameraEngine.setAperture(clamped);
+      if (seq !== signatureApplySeqRef.current || settleSeq !== apertureSettleSeqRef.current) return;
+      confirmedApertureRef.current = clamped;
+      if (apertureDraggingRef.current) return;
+      setCurrentAperture(clamped);
+      if (mockApertureModeRef.current === null) {
+        // Real variable hardware: the iris may settle on the nearest physical stop —
+        // the UI shows the HARDWARE truth, not the request.
+        const capabilities = await CameraEngine.getCapabilities();
+        if (seq !== signatureApplySeqRef.current || settleSeq !== apertureSettleSeqRef.current) return;
+        const real = capabilities.activeAperture;
+        if (typeof real === 'number' && Number.isFinite(real) && real > 0) {
+          confirmedApertureRef.current = real;
+          if (!apertureDraggingRef.current) {
+            setCurrentAperture(real);
+          }
+        }
+      }
+    } catch (err: unknown) {
+      // Hardware refused — leave the ring where the user had it, journal the reason.
+      recordDiag('warn', `signature aperture ${preferred} rejected: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [apertureRange]);
+
+  useEffect(() => {
+    if (!isCameraRunning || !activeProfile || !apertureVariable) return;
+    if (preferredApertureProfileRef.current === activeProfile.id) return;
+    if (activeProfile.passthrough) {
+      preferredApertureProfileRef.current = activeProfile.id;
+      return; // ORIG preserves the current physical aperture.
+    }
+    void applySignatureAperture(activeProfile);
+  }, [activeProfile, isCameraRunning, apertureVariable, applySignatureAperture]);
 
   // Native -> ApertureState sync: the Camera Control slider (and any native aperture
   // source) flows back here so the SCREEN RING always shows the same f-number. There is
@@ -887,6 +940,7 @@ function CameraAppScreen(): React.JSX.Element {
     const seq = ++focalSelectSeqRef.current;
     const superseded = () => seq !== focalSelectSeqRef.current;
     const previousMm = currentFocalMm;
+    const previousLens = activeLensRef.current;
     try {
       recordDiag('info', `focal: select ${stop.mm}mm lens=${stop.lens} (zoom=${stop.zoom}) from ${previousMm}mm`);
       await CameraEngine.setLens(stop.lens);
@@ -913,6 +967,9 @@ function CameraAppScreen(): React.JSX.Element {
           min: capabilities.minAperture ?? 1.48,
           max: capabilities.maxAperture ?? 4,
         });
+        if (previousLens !== 'wide' && stop.lens === 'wide' && activeProfile && !activeProfile.passthrough) {
+          void applySignatureAperture(activeProfile);
+        }
       } else {
         setApertureRange(null);
         const fixed = capabilities.activeAperture ?? 1.8;
@@ -928,7 +985,7 @@ function CameraAppScreen(): React.JSX.Element {
       if (previousMm != null) setCurrentFocalMm(previousMm);
       showTransientError(resolveErrorMessage(err));
     }
-  }, [currentFocalMm, showTransientError]);
+  }, [currentFocalMm, showTransientError, activeProfile, applySignatureAperture]);
 
   const handleCapturePhoto = async () => {
     if (capturePhase === 'capturing') return;

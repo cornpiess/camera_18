@@ -1117,20 +1117,6 @@ public final class CameraEngineView: ExpoView {
     previewGeneration += 1
     profileLock.unlock()
     if passthrough {
-      sessionQueue.async {
-        guard self.manualApertureRequested else { return }
-        self.manualApertureRequested = false
-        let mm = self.currentEquivalentMM
-        self.setLens(self.requestedLens.rawValue) { result in
-          guard case .success = result else { return }
-          self.noteEquivalentFocalMM(mm)
-          self.setZoomFactor(Double(mm) / 26) { _ in
-            if let device = self.apertureDevice, let controller = self.apertureControllerRef {
-              Self.apertureEventSink?(controller.currentAperture(device))
-            }
-          }
-        }
-      }
       CameraDNARenderer.invalidateCompiledProfile([:])
     } else {
       CameraDNARenderer.invalidateCompiledProfile(value)
