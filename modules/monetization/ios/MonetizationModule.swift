@@ -13,7 +13,7 @@ import UIKit
  *    `Transaction.currentEntitlements` includes them.
  *
  * 2. CameraTrialStore (Keychain): per-premium-profile used shot counts plus an
- *    in-memory in-flight reservation set, so a remaining-1 quota cannot be raced
+ *    durable capture-ID receipt ledger, so a remaining-1 quota cannot be raced
  *    into multiple saved photos by rapid shutter taps. Reinstall-survivable via the
  *    Keychain (thisDeviceOnly); it is an honesty measure, not an anti-cheat system.
  *
@@ -34,22 +34,26 @@ private let trialLimit = 3
 
 /// Serial, in-memory-cached view over the Keychain-persisted trial document.
 private final class CameraTrialStore {
+  private struct Receipt: Codable {
+    let profileID: String
+    var committed: Bool
+  }
   private struct Document: Codable {
     var version: Int = 1
     var usedShots: [String: Int] = [:]
+    var receipts: [String: Receipt]? // optional for version-1 Keychain migration
   }
 
   private let service: String
   private let account = "trialStore"
   private let queue = DispatchQueue(label: "camera18.monetization.trial")
   private var document: Document
-  /// Reservation bookkeeping (memory-only by design: a killed process simply loses
-  /// them; `usedShots` is the only permanent record).
-  private var inFlight: [String: Int] = [:]
+  private var startupPendingIDs: Set<String> = []
 
   init(service: String) {
     self.service = service
     self.document = Self.load(service: service, account: account) ?? Document()
+    self.startupPendingIDs = Set((document.receipts ?? [:]).filter { !$0.value.committed }.keys)
   }
 
   private static func load(service: String, account: String) -> Document? {
@@ -66,8 +70,9 @@ private final class CameraTrialStore {
     return try? JSONDecoder().decode(Document.self, from: data)
   }
 
-  private func persist() {
-    guard let data = try? JSONEncoder().encode(document) else { return }
+  @discardableResult
+  private func persist() -> Bool {
+    guard let data = try? JSONEncoder().encode(document) else { return false }
     let base: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -82,10 +87,11 @@ private final class CameraTrialStore {
     var item: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &item)
     if status == errSecSuccess {
-      SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
-    } else {
-      SecItemAdd(base.merging(attributes) { _, new in new } as CFDictionary, nil)
+      return SecItemUpdate(base as CFDictionary, attributes as CFDictionary) == errSecSuccess
+    } else if status == errSecItemNotFound {
+      return SecItemAdd(base.merging(attributes) { _, new in new } as CFDictionary, nil) == errSecSuccess
     }
+    return false
   }
 
   private func clamped(_ value: Int) -> Int {
@@ -98,36 +104,52 @@ private final class CameraTrialStore {
   }
 
   /// Atomically claims one trial shot: succeeds only while
-  /// `trialLimit - used - inFlight > 0`. The count is only permanent after `commit`.
-  func reserve(profileID: String) -> Bool {
-    return queue.sync {
+  /// `trialLimit - used - pending receipts > 0`. The count is only permanent after `commit`.
+  func reserve(profileID: String, captureID: String) -> Bool {
+    queue.sync {
+      var receipts = document.receipts ?? [:]
+      if let receipt = receipts[captureID] { return receipt.profileID == profileID && !receipt.committed }
       let used = clamped(document.usedShots[profileID] ?? 0)
-      let reserved = inFlight[profileID] ?? 0
-      guard trialLimit - used - reserved > 0 else { return false }
-      inFlight[profileID] = reserved + 1
+      let pending = receipts.values.filter { $0.profileID == profileID && !$0.committed }.count
+      guard !captureID.isEmpty, trialLimit - used - pending > 0 else { return false }
+      let previous = document
+      receipts[captureID] = Receipt(profileID: profileID, committed: false)
+      document.receipts = receipts
+      guard persist() else { document = previous; return false }
       return true
     }
   }
 
-  /// A successfully SAVED photo consumed one trial shot (spec: only a saved photo
-  /// consumes; capture/processing/save failures roll back instead).
-  func commit(profileID: String) {
+  func commit(profileID: String, captureID: String) -> Bool {
     queue.sync {
-      let used = clamped(document.usedShots[profileID] ?? 0)
-      document.usedShots[profileID] = clamped(used + 1)
-      if let reserved = inFlight[profileID] {
-        inFlight[profileID] = max(0, reserved - 1)
-      }
-      persist()
+      guard var receipt = document.receipts?[captureID], !receipt.committed,
+            receipt.profileID == profileID else { return true }
+      let previous = document
+      document.usedShots[profileID] = clamped((document.usedShots[profileID] ?? 0) + 1)
+      receipt.committed = true
+      document.receipts?[captureID] = receipt
+      guard persist() else { document = previous; return false }
+      return true // committed IDs survive restart and duplicate delivery
     }
   }
 
-  /// The capture pipeline failed — give the reserved shot back.
-  func rollback(profileID: String) {
+  func rollback(profileID: String, captureID: String) -> Bool {
     queue.sync {
-      if let reserved = inFlight[profileID] {
-        inFlight[profileID] = max(0, reserved - 1)
-      }
+      guard let receipt = document.receipts?[captureID], !receipt.committed,
+            receipt.profileID == profileID else { return true }
+      let previous = document
+      document.receipts?.removeValue(forKey: captureID)
+      guard persist() else { document = previous; return false }
+      return true
+    }
+  }
+
+  func reconcile(pendingCaptureIDs: [String]) {
+    queue.sync {
+      let known = Set(pendingCaptureIDs)
+      let previous = document
+      document.receipts = document.receipts?.filter { $0.value.committed || !startupPendingIDs.contains($0.key) || known.contains($0.key) }
+      if persist() { startupPendingIDs.removeAll() } else { document = previous }
     }
   }
 
@@ -135,7 +157,6 @@ private final class CameraTrialStore {
   func reset() {
     queue.sync {
       document = Document()
-      inFlight = [:]
       persist()
     }
   }
@@ -340,16 +361,20 @@ public final class MonetizationModule: Module {
       trialStore.usedShotsSnapshot()
     }
 
-    Function("reserveTrialShot") { (profileID: String) -> Bool in
-      trialStore.reserve(profileID: profileID)
+    Function("reserveTrialShot") { (profileID: String, captureID: String) -> Bool in
+      trialStore.reserve(profileID: profileID, captureID: captureID)
     }
 
-    Function("commitTrialShot") { (profileID: String) in
-      trialStore.commit(profileID: profileID)
+    Function("commitTrialShot") { (profileID: String, captureID: String) -> Bool in
+      trialStore.commit(profileID: profileID, captureID: captureID)
     }
 
-    Function("rollbackTrialShot") { (profileID: String) in
-      trialStore.rollback(profileID: profileID)
+    Function("rollbackTrialShot") { (profileID: String, captureID: String) -> Bool in
+      trialStore.rollback(profileID: profileID, captureID: captureID)
+    }
+
+    Function("reconcileTrialReservations") { (captureIDs: [String]) in
+      trialStore.reconcile(pendingCaptureIDs: captureIDs)
     }
 
     // TESTING BUILDS ONLY (mirrors the camera-engine CAMERA18_TESTING gate): wipe

@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
 final class CameraPhotoStore {
   static let shared = CameraPhotoStore()
   typealias Completion = (Result<[String: Any], CameraEngineError>, String?) -> Void
+  var stateSink: (([String: Any]) -> Void)?
+  private var suspended = false
+  private var executionLease: UIBackgroundTaskIdentifier = .invalid // main thread only
   var eventSink: (([String: Any]) -> Void)?
   private let queue = DispatchQueue(label: "camera-engine.photo-store", qos: .userInitiated)
   private let fm = FileManager.default
@@ -36,10 +39,11 @@ final class CameraPhotoStore {
     let diagnosticsData: Data
     var flattened: Bool = false
     var assetID: String?
+    var originalConfirmed: Bool?
     var lastError: String?
     var attemptID: String? // in-memory callback lease; not persisted
     enum CodingKeys: String, CodingKey {
-      case id, createdAt, proxy, profileData, diagnosticsData, flattened, assetID, lastError
+      case id, createdAt, proxy, profileData, diagnosticsData, flattened, assetID, originalConfirmed, lastError
     }
   }
 
@@ -58,7 +62,8 @@ final class CameraPhotoStore {
 
   /// One recovery pass at launch / foreground, never a polling or retry loop.
   func resume() {
-    queue.async { self.attempted.removeAll(); self.updateCapacity(); self.drain() }
+    ensureExecutionLease()
+    queue.async { self.suspended = false; self.replayOutcomes(); self.attempted.removeAll(); self.updateCapacity(); self.drain() }
   }
 
   private func folder(_ id: String) -> URL { directory.appendingPathComponent(id, isDirectory: true) }
@@ -76,6 +81,7 @@ final class CameraPhotoStore {
 
   func accept(data: Data, proxy: Bool, captureID: String, profile: [String: Any],
               diagnostics: [String: Any], completion: @escaping Completion) {
+    ensureExecutionLease()
     queue.async {
       do {
         // The ID comes from native UUID generation, never a user-supplied file path.
@@ -100,16 +106,21 @@ final class CameraPhotoStore {
     return pendingCount < 8
   }
   private func updateCapacity() {
-    let count = jobs().count
+    let count = jobs().filter { $0.lastError == nil }.count
     capacityLock.lock(); pendingCount = count; capacityLock.unlock()
+    publishState()
   }
 
   private func drain() {
-    guard !active, var job = jobs().first(where: { !attempted.contains($0.id) }) else { return }
+    guard !active, !suspended else { return }
+    guard var job = jobs().first(where: { !attempted.contains($0.id) }) else { endExecutionLease(); publishState(); return }
+    job.lastError = nil
+    try? save(job)
     active = true
     job.attemptID = UUID().uuidString
     activeAttempt = job.attemptID
     attempted.insert(job.id)
+    updateCapacity()
     queue.asyncAfter(deadline: .now() + 120) {
       guard self.isActive(job) else { return }
       // Reload the journal: a create transaction may already have persisted its ID.
@@ -135,7 +146,7 @@ final class CameraPhotoStore {
       return
     }
     guard !originalJob.proxy || Self.canReadOwnPhotos else {
-      complete(originalJob, error: .photoPermissionDenied, detail: "Reading the final deferred photo requires photo access; the proxy is retained.")
+      complete(originalJob, error: .photoReadDenied, detail: "Reading the final deferred photo requires photo access; the proxy is retained.")
       return
     }
     var job = originalJob
@@ -179,6 +190,8 @@ final class CameraPhotoStore {
           self.complete(job, error: .saveFailed, detail: (journalError ?? error)?.localizedDescription ?? "Original photo save failed.")
           return
         }
+        job.originalConfirmed = true
+        try? self.save(job)
         if job.flattened { self.deliver(job, url: self.folder(job.id).appendingPathComponent("rendered.data"), fallback: false) }
         else if Self.canReadOwnPhotos { self.loadFinal(job) }
         else { self.deliver(job, url: self.sourceURL(job), fallback: false) }
@@ -200,9 +213,13 @@ final class CameraPhotoStore {
           let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else {
       // Missing could mean deleted, restricted, or interrupted transaction. Preserve
       // the source and stop; automatically creating another asset risks duplicates.
-      complete(job, error: .photoPermissionDenied, detail: "The saved original is not accessible; pending work is retained.")
+      complete(job, error: Self.canReadOwnPhotos ? .processingFailed : .photoReadDenied,
+        detail: "The saved original is not accessible; pending work is retained.")
       return
     }
+    var job = job
+    job.originalConfirmed = true
+    try? save(job)
     let options = PHContentEditingInputRequestOptions()
     options.isNetworkAccessAllowed = true
     options.canHandleAdjustmentData = { _ in true }
@@ -293,6 +310,12 @@ final class CameraPhotoStore {
   private func deliver(_ job: Job, url: URL, fallback: Bool) {
     guard isActive(job) else { return }
     do {
+      let latestDirectory = directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest", isDirectory: true)
+      let manifest = latestDirectory.appendingPathComponent("latest.json")
+      let previousData = try? Data(contentsOf: manifest)
+      let previous = previousData.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+      let diagnostics = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
+      let isLatest = (diagnostics["capturedAt"] as? Double ?? 0) >= (previous?["capturedAt"] as? Double ?? 0)
       let source = CGImageSourceCreateWithURL(url as CFURL, nil)
       let type = source.flatMap { CGImageSourceGetType($0) }.map { $0 as String } ?? "public.jpeg"
       let final = CameraTempFiles.makeFinalURL(pathExtension: type == "public.heic" || type == "public.heif" ? "heif" : "jpg")
@@ -307,11 +330,11 @@ final class CameraPhotoStore {
       ] as CFDictionary), let dest = CGImageDestinationCreateWithURL(thumb as CFURL, "public.jpeg" as CFString, 1, nil) {
         CGImageDestinationAddImage(dest, cg, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
         if CGImageDestinationFinalize(dest) {
-          thumbURI = CameraTempFiles.persistLatestThumbnail(from: thumb)?.absoluteString ?? thumb.absoluteString
+          thumbURI = isLatest ? (CameraTempFiles.persistLatestThumbnail(from: thumb)?.absoluteString ?? thumb.absoluteString) : thumb.absoluteString
         }
       }
       CameraTempFiles.keep([final, thumb])
-      var facts = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
+      var facts = diagnostics
       if let source, let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
         facts["actualWidth"] = properties[kCGImagePropertyPixelWidth as String]
         facts["actualHeight"] = properties[kCGImagePropertyPixelHeight as String]
@@ -321,27 +344,42 @@ final class CameraPhotoStore {
         facts["actualAperture"] = exif["FNumber"]
         facts["lensModel"] = exif["LensModel"]
       }
-      facts["fileUri"] = final.absoluteString
+      try fm.createDirectory(at: latestDirectory, withIntermediateDirectories: true)
+      let persistent = latestDirectory.appendingPathComponent(job.id).appendingPathExtension(final.pathExtension)
+      if !fm.fileExists(atPath: persistent.path) { try fm.copyItem(at: final, to: persistent) }
+      facts["fileUri"] = persistent.absoluteString
       facts["thumbnailUri"] = thumbURI
       facts["assetLocalIdentifier"] = job.assetID ?? ""
       facts["codec"] = type
       facts["jobID"] = job.id
       facts["processingFallback"] = fallback
       facts["ok"] = true
+      facts["terminal"] = true
+      facts["originalSaved"] = true
       facts["recovered"] = callbacks[job.id] == nil
+      if isLatest { try JSONSerialization.data(withJSONObject: facts).write(to: manifest, options: .atomic) }
+      try persistOutcome(facts, id: job.id)
+      // Only derived full-size copies are cleaned. Original-only archives are never automatic cleanup targets.
+      let copies = (try? fm.contentsOfDirectory(at: latestDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+      let latestURI = isLatest ? persistent.absoluteString : previous?["fileUri"] as? String
+      for copy in copies where copy != persistent && copy.absoluteString != latestURI && copy.pathExtension != "json" {
+        try? fm.removeItem(at: copy)
+      }
       NSLog("[CameraEngine][Photo] id=%@ delivery=%@ dimensions=%@x%@", job.id,
         String(describing: facts["delivery"] ?? "direct"), String(describing: facts["actualWidth"] ?? 0),
         String(describing: facts["actualHeight"] ?? 0))
-      if job.flattened {
-        // Read-denied fallback still preserves the clean original and recipe locally.
-        // It cannot attach an original resource to an existing Photos asset without
-        // read access. The fallback is a single styled asset, not two visible photos.
-        let archive = directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
-        try fm.createDirectory(at: archive, withIntermediateDirectories: true)
-        let target = archive.appendingPathComponent(job.id, isDirectory: true)
-        if !fm.fileExists(atPath: target.path) { try fm.moveItem(at: folder(job.id), to: target) }
-        else { try fm.removeItem(at: folder(job.id)) }
-      } else { try fm.removeItem(at: folder(job.id)) }
+      do {
+        if job.flattened {
+          // Read-denied fallback still preserves the clean original and recipe locally.
+          // It cannot attach an original resource to an existing Photos asset without
+          // read access. The fallback is a single styled asset, not two visible photos.
+          let archive = directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
+          try fm.createDirectory(at: archive, withIntermediateDirectories: true)
+          let target = archive.appendingPathComponent(job.id, isDirectory: true)
+          if !fm.fileExists(atPath: target.path) { try fm.moveItem(at: folder(job.id), to: target) }
+          else { try fm.removeItem(at: folder(job.id)) }
+        } else { try fm.removeItem(at: folder(job.id)) }
+      } catch { NSLog("[CameraEngine][Photo] saved; retained journal after cleanup failure: %@", error.localizedDescription) }
       let callback = callbacks.removeValue(forKey: job.id)
       DispatchQueue.main.async {
         if let callback { callback(.success(facts), nil) }
@@ -361,17 +399,200 @@ final class CameraPhotoStore {
     job.lastError = detail
     try? save(job)
     let callback = callbacks.removeValue(forKey: job.id)
+    var facts = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
+    facts["ok"] = false
+    facts["terminal"] = false
+    facts["retained"] = true
+    facts["originalSaved"] = job.originalConfirmed == true
+    facts["errorCode"] = error.rawValue
+    facts["detail"] = detail
+    facts["recovered"] = callback == nil
     DispatchQueue.main.async {
-      if let callback { callback(.failure(error), detail) }
-      else {
-        let facts = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
-        self.eventSink?(["ok": false, "recovered": true, "captureID": facts["captureID"] ?? job.id, "errorCode": error.rawValue, "detail": detail])
-      }
+      if let callback { callback(.success(facts), detail) }
+      else { self.eventSink?(facts) }
     }
+    updateCapacity()
     active = false
     activeAttempt = nil
     drain()
   }
+  private var outcomeDirectory: URL { directory.deletingLastPathComponent().appendingPathComponent("Camera18Outcomes", isDirectory: true) }
+  private func persistOutcome(_ facts: [String: Any], id: String) throws {
+    try fm.createDirectory(at: outcomeDirectory, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: facts).write(to: outcomeDirectory.appendingPathComponent(id).appendingPathExtension("json"), options: .atomic)
+  }
+  private func outcomes() -> [[String: Any]] {
+    let urls = (try? fm.contentsOfDirectory(at: outcomeDirectory, includingPropertiesForKeys: nil)) ?? []
+    return urls.compactMap { url in
+      guard let data = try? Data(contentsOf: url) else { return nil }
+      return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+  }
+  private func replayOutcomes() {
+    for var facts in outcomes() {
+      facts["recovered"] = true
+      DispatchQueue.main.async { self.eventSink?(facts) }
+    }
+  }
+  func acknowledge(_ id: String) {
+    guard UUID(uuidString: id) != nil else { return }
+    queue.async { try? self.fm.removeItem(at: self.outcomeDirectory.appendingPathComponent(id).appendingPathExtension("json")) }
+  }
+
+  private func ensureExecutionLease() {
+    DispatchQueue.main.async {
+      guard self.executionLease == .invalid else { return }
+      self.executionLease = UIApplication.shared.beginBackgroundTask(withName: "Finish Camera18 photo") {
+        self.queue.async {
+          self.suspended = true
+          self.activeAttempt = nil
+          self.active = false
+          self.publishState()
+        }
+        self.endExecutionLease()
+      }
+    }
+  }
+  private func endExecutionLease() {
+    DispatchQueue.main.async {
+      let lease = self.executionLease
+      self.executionLease = .invalid
+      if lease != .invalid { UIApplication.shared.endBackgroundTask(lease) }
+    }
+  }
+  private func stateValue() -> [String: Any] {
+    let all = jobs()
+    let failed = all.filter { $0.lastError != nil }.count
+    let originalDirectory = directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
+    let originals = (try? fm.contentsOfDirectory(at: originalDirectory, includingPropertiesForKeys: nil)) ?? []
+    return ["processing": max(0, all.count - failed), "waiting": failed,
+      "originals": originals.count, "paused": suspended,
+      "originalSaved": all.filter { $0.originalConfirmed == true }.count,
+      "captureIDs": all.compactMap { ((try? JSONSerialization.jsonObject(with: $0.diagnosticsData)) as? [String: Any])?["captureID"] as? String }
+        + outcomes().compactMap { $0["captureID"] as? String }]
+  }
+  private func publishState() {
+    let state = stateValue()
+    DispatchQueue.main.async { self.stateSink?(state) }
+  }
+  func snapshot(_ completion: @escaping ([String: Any]) -> Void) {
+    queue.async { completion(self.stateValue()) }
+  }
+  func latest(_ completion: @escaping ([String: Any]?) -> Void) {
+    queue.async {
+      let url = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest/latest.json")
+      guard let data = try? Data(contentsOf: url),
+            let facts = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let uri = facts["fileUri"] as? String, let file = URL(string: uri), self.fm.fileExists(atPath: file.path) else {
+        completion(nil); return
+      }
+      completion(facts)
+    }
+  }
+
+  private func presenter() -> UIViewController? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    var controller = scenes.first(where: { $0.activationState == .foregroundActive })?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+    while let next = controller?.presentedViewController { controller = next }
+    return controller
+  }
+  /// A single recovery sheet, accessible from the delivery pill and photo viewer.
+  /// No automatic deletion of a sole original; removal is an explicit user choice.
+  func showRecovery(completion: @escaping () -> Void) {
+    queue.async {
+      let state = self.stateValue()
+      let pending = self.jobs()
+      let archive = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
+      let retained = (try? self.fm.contentsOfDirectory(at: archive, includingPropertiesForKeys: nil)) ?? []
+      let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+      DispatchQueue.main.async {
+        guard let presenter = self.presenter() else { completion(); return }
+        let message = zh
+          ? "正在完成：\(state["processing"] ?? 0) 张\n等待重试：\(state["waiting"] ?? 0) 张\n本地保留原图：\(state["originals"] ?? 0) 张"
+          : "Finishing: \(state["processing"] ?? 0)\nWaiting to retry: \(state["waiting"] ?? 0)\nOriginals kept locally: \(state["originals"] ?? 0)"
+        let sheet = UIAlertController(title: zh ? "照片状态" : "Photo status", message: message, preferredStyle: .actionSheet)
+        if !pending.isEmpty {
+          sheet.addAction(UIAlertAction(title: zh ? "重试完成照片" : "Retry finishing photos", style: .default) { _ in self.resume() })
+        }
+        if !Self.canReadOwnPhotos {
+          sheet.addAction(UIAlertAction(title: zh ? "前往设置允许照片访问" : "Allow photo access in Settings", style: .default) { _ in
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+          })
+        }
+        let stoppable = pending.filter { !$0.proxy && $0.lastError != nil }
+        if !stoppable.isEmpty {
+          sheet.addAction(UIAlertAction(title: zh ? "保留原图，结束等待…" : "Keep originals and stop waiting…", style: .default) { [weak sheet] _ in
+            guard let sheet else { return }
+            let confirm = UIAlertController(title: zh ? "结束这些照片的风格处理？" : "Stop styling these photos?",
+              message: zh ? "原始照片会保留在本机，可在照片状态中导出。未完成风格的试拍名额将释放。" : "Originals stay on this device for export. Unfinished trial reservations are released.", preferredStyle: .alert)
+            confirm.addAction(UIAlertAction(title: zh ? "取消" : "Cancel", style: .cancel))
+            confirm.addAction(UIAlertAction(title: zh ? "保留原图并结束" : "Keep originals and stop", style: .default) { _ in
+              self.queue.async {
+                guard !self.active else { self.publishState(); return }
+                try? self.fm.createDirectory(at: archive, withIntermediateDirectories: true)
+                for job in stoppable {
+                  let destination = archive.appendingPathComponent(job.id, isDirectory: true)
+                  do {
+                    var facts = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
+                    facts.merge(["jobID": job.id, "ok": false, "terminal": true, "retained": true,
+                      "originalSaved": job.originalConfirmed == true, "errorCode": CameraEngineError.processingFailed.rawValue]) { _, new in new }
+                    try self.fm.moveItem(at: self.folder(job.id), to: destination)
+                    try self.persistOutcome(facts, id: job.id)
+                    DispatchQueue.main.async { self.eventSink?(facts) }
+                  } catch {
+                    // A failed move or outcome write never deletes the retained source.
+                  }
+                }
+                self.updateCapacity()
+              }
+            })
+            sheet.dismiss(animated: true) { presenter.present(confirm, animated: true) }
+          })
+        }
+        let exportable = pending.filter { !$0.proxy }.map { self.sourceURL($0) }
+          + retained.map { $0.appendingPathComponent("source.data") }
+        if !exportable.isEmpty {
+          sheet.addAction(UIAlertAction(title: zh ? "导出保留的原图" : "Export retained originals", style: .default) { _ in
+            self.queue.async {
+              // Give shared files a truthful extension. Keep private originals untouched.
+              let exportDirectory = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Export", isDirectory: true)
+              try? self.fm.removeItem(at: exportDirectory)
+              try? self.fm.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+              var urls: [URL] = []
+              for source in exportable {
+                guard let image = CGImageSourceCreateWithURL(source as CFURL, nil), let type = CGImageSourceGetType(image) else { continue }
+                let ext = (type as String) == "public.jpeg" ? "jpg" : "heic"
+                let target = exportDirectory.appendingPathComponent(source.deletingLastPathComponent().lastPathComponent).appendingPathExtension(ext)
+                if (try? self.fm.copyItem(at: source, to: target)) != nil { urls.append(target) }
+              }
+              DispatchQueue.main.async {
+                guard !urls.isEmpty, let current = self.presenter() else { return }
+                let activity = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+                activity.popoverPresentationController?.sourceView = current.view
+                current.present(activity, animated: true)
+              }
+            }
+          })
+        }
+        if !retained.isEmpty {
+          sheet.addAction(UIAlertAction(title: zh ? "清理本地保留的原图…" : "Remove locally retained originals…", style: .destructive) { [weak sheet] _ in
+            guard let sheet else { return }
+            let alert = UIAlertController(title: zh ? "删除本地原图？" : "Delete local originals?",
+              message: zh ? "相册中的风格照片会保留。删除后将无法从这些本地文件恢复干净原图，请先导出。" : "Styled photos in Photos remain. These clean originals cannot be recovered after deletion. Export them first.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: zh ? "取消" : "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: zh ? "删除本地原图" : "Delete local originals", style: .destructive) { _ in
+              self.queue.async { for file in retained { try? self.fm.removeItem(at: file) }; self.publishState() }
+            })
+            sheet.dismiss(animated: true) { presenter.present(alert, animated: true) }
+          })
+        }
+        sheet.addAction(UIAlertAction(title: zh ? "关闭" : "Close", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = presenter.view
+        presenter.present(sheet, animated: true, completion: completion)
+      }
+    }
+  }
+
   static func encodedRepresentation(_ image: CIImage, metadata: [AnyHashable: Any]?, colorSpace: CGColorSpace, quality: Double, type: CFString) -> Data? {
     guard let cgImage = CameraEngineGPU.ciContext.createCGImage(image, from: image.extent, format: CIFormat.RGBA8, colorSpace: colorSpace) else { return nil }
     let output = NSMutableData()

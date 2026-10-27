@@ -5,6 +5,9 @@ import { recordDiag, registeredExpoModuleNames } from '../utils/diagLog';
 
 export type CameraProfile = Record<string, unknown>;
 
+export type CaptureState = { ready: boolean; reason: 'ready' | 'unavailable' | 'exposing' | 'optics' | 'aperture' | 'processing'; apertureTarget?: number; equivalentFocal?: number };
+export type PhotoDeliveryState = { processing: number; waiting: number; originals: number; paused: boolean; originalSaved: number; captureIDs?: string[] };
+
 export type CameraCapabilities = {
   supportsVariableAperture: boolean;
   minAperture: number | null;
@@ -65,6 +68,11 @@ export type CapturedPhoto = {
 
 /** Background pipeline outcome (Camera DNA → HEIF → PhotoKit finished or failed). */
 export type PhotoProcessedEvent = {
+  jobID?: string;
+  profileID?: string;
+  terminal?: boolean;
+  retained?: boolean;
+  originalSaved?: boolean;
   captureID?: string;
   recovered?: boolean;
   capturedAt?: number;
@@ -96,6 +104,8 @@ export type CameraEngineErrorCode =
   | 'ERR_CAPTURE_BUSY'
   | 'ERR_PROCESSING_FAILED'
   | 'ERR_SAVE_FAILED'
+  | 'ERR_APERTURE_NOT_READY'
+  | 'ERR_PHOTO_READ_DENIED'
   | 'ERR_APERTURE_UNSUPPORTED'
   | 'ERR_NATIVE_FAILURE';
 
@@ -107,9 +117,15 @@ export class CameraEngineError extends Error {
 }
 
 type NativeCameraEngine = {
+  ackPhotoOutcome(id: string): Promise<void>;
+  getCaptureState(): Promise<CaptureState>;
+  setFocalStop(lens: string, zoom: number, mm: number): Promise<void>;
+  getPhotoDeliveryState(): Promise<PhotoDeliveryState>;
+  showPhotoRecovery(): Promise<void>;
+  getLatestPhoto(): Promise<PhotoProcessedEvent | null>;
   startCamera(): Promise<boolean>;
   stopCamera(): Promise<void>;
-  capturePhoto(equivalentMM: number, captureID: string): Promise<CapturedPhoto>;
+  capturePhoto(equivalentMM: number, captureID: string, recipe: CameraProfile): Promise<CapturedPhoto>;
   setAperture(fStop: number): Promise<void>;
   /**
    * Drag-preview aperture: coalesced natively (≤1 lockForConfiguration / 0.12s,
@@ -208,6 +224,12 @@ function unavailableError(): CameraEngineError {
 }
 
 const unavailableModule: NativeCameraEngine = {
+  ackPhotoOutcome: () => Promise.reject(unavailableError()),
+  getCaptureState: () => Promise.reject(unavailableError()),
+  setFocalStop: () => Promise.reject(unavailableError()),
+  getPhotoDeliveryState: () => Promise.reject(unavailableError()),
+  showPhotoRecovery: () => Promise.reject(unavailableError()),
+  getLatestPhoto: () => Promise.reject(unavailableError()),
   startCamera: () => Promise.reject(unavailableError()),
   stopCamera: () => Promise.reject(unavailableError()),
   capturePhoto: () => Promise.reject(unavailableError()),
@@ -246,7 +268,13 @@ function typed<T>(operation: Promise<T>): Promise<T> {
 
 export const startCamera = (): Promise<boolean> => typed(NativeModule.startCamera());
 export const stopCamera = (): Promise<void> => typed(NativeModule.stopCamera());
-export const capturePhoto = (equivalentMM: number, captureID: string): Promise<CapturedPhoto> => typed(NativeModule.capturePhoto(equivalentMM, captureID));
+export const capturePhoto = (equivalentMM: number, captureID: string, recipe: CameraProfile): Promise<CapturedPhoto> => typed(NativeModule.capturePhoto(equivalentMM, captureID, recipe));
+export const ackPhotoOutcome = (id: string): Promise<void> => typed(NativeModule.ackPhotoOutcome(id));
+export const getCaptureState = (): Promise<CaptureState> => typed(NativeModule.getCaptureState());
+export const setFocalStop = (lens: string, zoom: number, mm: number): Promise<void> => typed(NativeModule.setFocalStop(lens, zoom, mm));
+export const getPhotoDeliveryState = (): Promise<PhotoDeliveryState> => typed(NativeModule.getPhotoDeliveryState());
+export const showPhotoRecovery = (): Promise<void> => typed(NativeModule.showPhotoRecovery());
+export const getLatestPhoto = (): Promise<PhotoProcessedEvent | null> => typed(NativeModule.getLatestPhoto());
 export const setAperture = (fStop: number): Promise<void> => typed(NativeModule.setAperture(fStop));
 export const setApertureCoalesced = (fStop: number): Promise<void> => typed(NativeModule.setApertureCoalesced(fStop));
 export const setFocusPoint = (x: number, y: number): Promise<void> => typed(NativeModule.setFocusPoint(x, y));
@@ -293,8 +321,13 @@ export const addPhotoProcessedListener = (
   cb: (event: PhotoProcessedEvent) => void,
 ): NativeEventSubscription => addEngineListener('onPhotoProcessed', cb);
 
+export const addCaptureStateListener = (cb: (event: CaptureState) => void): NativeEventSubscription => addEngineListener('onCaptureState', cb);
+export const addShutterRequestedListener = (cb: () => void): NativeEventSubscription => addEngineListener('onShutterRequested', cb);
+export const addPhotoDeliveryStateListener = (cb: (event: PhotoDeliveryState) => void): NativeEventSubscription => addEngineListener('onPhotoDeliveryState', cb);
+
 /** Functional native API; also convenient for call sites that prefer a namespace object. */
 export const CameraEngine = {
+  ackPhotoOutcome, getCaptureState, setFocalStop, getPhotoDeliveryState, showPhotoRecovery, getLatestPhoto,
   startCamera,
   stopCamera,
   capturePhoto,
