@@ -6,13 +6,6 @@
         "preferred": 2.8,
         "starZone": 4
       },
-      "raw": {
-        "sharpness": 0.46,
-        "detail": 0.58,
-        "localToneMap": 0.18,
-        "luminanceNoiseReduction": 0.1,
-        "colorNoiseReduction": 0.14
-      },
       "tone": {
         "exposure": 0.04,
         "contrast": 1.04,
@@ -38,8 +31,7 @@
             1,
             0.99
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 1.03,
@@ -99,16 +91,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.045,
+          "amount": 0,
           "size": 1.15
         },
         "vignette": {
           "amount": 0.1,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.025
       },
@@ -138,20 +126,18 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "aperture": {
         "preferred": 2.8,
         "starZone": 4
-      },
-      "raw": {
-        "sharpness": 0.42,
-        "detail": 0.54,
-        "localToneMap": 0.14,
-        "luminanceNoiseReduction": 0.1,
-        "colorNoiseReduction": 0.14
       },
       "tone": {
         "exposure": 0.03,
@@ -178,8 +164,7 @@
             1,
             0.97
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 0.91,
@@ -239,16 +224,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.07,
+          "amount": 0,
           "size": 1.15
         },
         "vignette": {
           "amount": 0.075,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.025
       },
@@ -278,20 +259,18 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "aperture": {
         "preferred": 1.8,
         "starZone": 4
-      },
-      "raw": {
-        "sharpness": 0.32,
-        "detail": 0.5,
-        "localToneMap": 0.14,
-        "luminanceNoiseReduction": 0.12,
-        "colorNoiseReduction": 0.18
       },
       "tone": {
         "exposure": 0.02,
@@ -318,8 +297,7 @@
             1,
             0.97
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 1,
@@ -379,16 +357,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.018,
+          "amount": 0,
           "size": 1.15
         },
         "vignette": {
           "amount": 0.045,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.055
       },
@@ -418,20 +392,18 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "aperture": {
         "preferred": 4,
         "starZone": 4
-      },
-      "raw": {
-        "sharpness": 0.4,
-        "detail": 0.54,
-        "localToneMap": 0.14,
-        "luminanceNoiseReduction": 0.1,
-        "colorNoiseReduction": 0.14
       },
       "tone": {
         "exposure": 0.02,
@@ -458,8 +430,7 @@
             1,
             0.98
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 0.86,
@@ -519,16 +490,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.06,
+          "amount": 0,
           "size": 1.15
         },
         "vignette": {
           "amount": 0.095,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.025
       },
@@ -558,20 +525,18 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "aperture": {
         "preferred": 2.8,
         "starZone": 4
-      },
-      "raw": {
-        "sharpness": 0.42,
-        "detail": 0.54,
-        "localToneMap": 0.13,
-        "luminanceNoiseReduction": 0.1,
-        "colorNoiseReduction": 0.14
       },
       "tone": {
         "exposure": 0.04,
@@ -598,8 +563,7 @@
             1,
             0.985
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 0.98,
@@ -659,16 +623,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.085,
+          "amount": 0,
           "size": 1.5
         },
         "vignette": {
           "amount": 0.13,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.025
       },
@@ -698,20 +658,18 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "aperture": {
         "preferred": 1.8,
         "starZone": 4
-      },
-      "raw": {
-        "sharpness": 0.3,
-        "detail": 0.5,
-        "localToneMap": 0.08,
-        "luminanceNoiseReduction": 0.06,
-        "colorNoiseReduction": 0.1
       },
       "tone": {
         "exposure": 0.035,
@@ -738,8 +696,7 @@
             1,
             0.99
           ]
-        ],
-        "exposureBias": 0
+        ]
       },
       "color": {
         "saturation": 1,
@@ -799,16 +756,12 @@
       },
       "texture": {
         "grain": {
-          "amount": 0.025,
+          "amount": 0,
           "size": 1.15
         },
         "vignette": {
           "amount": 0.12,
           "radius": 0.75
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         },
         "deharsh": 0.025
       },
@@ -838,7 +791,12 @@
         }
       },
       "developmentReference": {
-        "note": "2026-10-09 character revision: functional hue bands, luma-preserving split tone, final-only monochrome grain. Inspired by public Dazz/Gloam descriptions; not their proprietary recipes."
+        "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
@@ -848,18 +806,10 @@
       "aperture": {
         "preferred": 2.5
       },
-      "raw": {
-        "sharpness": 0,
-        "detail": 0,
-        "localToneMap": 0,
-        "luminanceNoiseReduction": 0,
-        "colorNoiseReduction": 0
-      },
       "tone": {
         "exposure": 0,
         "contrast": 1,
         "blackPoint": 0,
-        "exposureBias": 0,
         "curve": [
           [
             0,
@@ -936,10 +886,6 @@
           "amount": 0,
           "radius": 0.85
         },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
-        },
         "deharsh": 0.04
       },
       "ui": {
@@ -961,24 +907,21 @@
             "subject": "人像 / 风景"
           }
         }
+      },
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "approximation",
+        "colorContract": "camera18-srgb-ci-v1"
       }
     },
     {
       "id": "negative_film",
       "name": "ORIG",
       "displayName": "ORIG",
-      "raw": {
-        "sharpness": 0,
-        "detail": 0,
-        "localToneMap": 0,
-        "luminanceNoiseReduction": 0,
-        "colorNoiseReduction": 0
-      },
       "tone": {
         "exposure": 0,
         "contrast": 1,
         "blackPoint": 0,
-        "exposureBias": 0,
         "curve": [
           [
             0,
@@ -1054,10 +997,6 @@
         "vignette": {
           "amount": 0,
           "radius": 0.85
-        },
-        "halation": {
-          "amount": 0,
-          "radius": 0.2
         }
       },
       "ui": {
@@ -1080,7 +1019,12 @@
           }
         }
       },
-      "passthrough": true
+      "passthrough": true,
+      "recipe": {
+        "version": "2026-10-27.1",
+        "status": "passthrough",
+        "colorContract": "camera18-srgb-ci-v1"
+      }
     }
   ]
 }

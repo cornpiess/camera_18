@@ -25,6 +25,9 @@ export type CameraCapabilities = {
 };
 
 export type EngineDiagnostics = {
+  rendererVersion?: number;
+  colorContract?: string;
+  normalizers?: string[];
   /** Every .cube name the native side can actually load this build. */
   bundledLuts: string[];
   /** add-only Photos permission: authorized | limited | denied | restricted | notDetermined | unknown */

@@ -96,7 +96,7 @@ git -c http.proxy=http://127.0.0.1:7890 -c credential.helper= -c credential.help
 | # | 红线 | 原因 |
 |---|---|---|
 | 1 | **禁止 EAS 云端打包**：不得执行 `eas build` / `npx eas build` / `npm run build:ios:dev` / `eas build --local`，除非用户**明确说出「现在可以打包」**。日常出包走第 1.1 节的 CI 路径 | EAS 免费配额仅 **15 次/月 iOS**，误触发要重新排队 |
-| 2 | **禁止品牌分支**：不得为 Leica / Fuji / Ricoh 等任何品牌在原生层写 `switch-case`。8 台相机必须共用 `ProfileRenderer.apply`，风格**只由 `assets/camera-profiles.json` 定义** | 加新相机必须只改 JSON |
+| 2 | **禁止品牌分支**：不得为 Leica / Fuji / Ricoh 等任何品牌在原生层写 `switch-case`。8 台相机必须共用 `CameraDNARenderer.apply`，风格**只由 `assets/camera-profiles.json` 定义** | 加新相机必须只改 JSON |
 | 3 | **禁止改回非共享 `CIContext`**：必须保持 `PhotoCaptureDelegate.sharedContext` 静态共享，不得在每次快门时 `new CIContext()` | 连续拍照会显存泄露并被 iOS Jetsam 杀进程 |
 | 4 | **禁止假虚化**：任何机型都**严禁纯软件景深/背景虚化/假光斑**。无物理可变光圈硬件时，光圈滚轮以 **DEMO 模式**呈现（默认开启，条上明示 DEMO）：可拧、有手感，联动 bloom/starburst 视觉因子，但成片始终使用镜头真实光圈；可变光圈硬件（iPhone 18 Pro）走真实物理光圈。相机皮肤：界面 chrome 取自各相机 `ui.accent`（品牌经典色的低饱和版本，如徕卡质感红、理光浅绿），**不得为品牌写原生分支** | 产品诚实性 |
 
@@ -164,7 +164,8 @@ node -e "const Y=require('yaml'),fs=require('fs');for(const f of ['.github/workf
 - 成片：`AVCapturePhotoOutput → CIImage → 同一 CameraDNARenderer(.final) → HEIF 0.95`；`photoQualityPrioritization = .balanced`；Responsive/ZSL/Fast Capture 三件套 capability 门控；Deferred Delivery 关闭；**快门 promise 在 Apple capture 完成即返回**，后处理走串行 processingQueue + `onPhotoProcessed` 事件
 - ORIG：profile JSON `"passthrough": true` → Apple 原图 bytes 原样落盘，零渲染、零二次编码
 - 共享阶段：LUT（.cube，`Camera18_LUT_V0` 包）、曝光、色彩、色调、对比、暗角
-- 仅成片：detail/deharsh、完整颗粒、halation
+- 共享颜色阶段包含 deharsh（2026-10-27 用户批准统一预览／成片）；可选颗粒仅成片，当前内置默认零。halation/detail/raw 参数不在生产路径执行。
+- 渲染器唯一实现：`CameraProfileRenderer.swift`（应用与 macOS 校准工具同源）；不得恢复网页独立滤镜。校准流程见 `docs/相机校准流程.md`。
 - 禁止：RN 侧逐帧图像处理、独立预览滤镜实现、AI、V1 自定义 Metal shader
 
 ---

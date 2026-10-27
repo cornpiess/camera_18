@@ -54,8 +54,7 @@ export interface GlobalColorAdjustments {
   /** Optional 3D LUT (.cube, Camera18_LUT_V0 pack) applied as the camera-character layer. */
   readonly lut?: string | null;
   /**
-   * LUT blend intensity 0..1 (default 1). The engine mixes LUT output over the tone-mapped
-   * image, so calibrated looks can be held back (0.3–0.8) to avoid a cheap filter feel.
+   * LUT blend intensity 0..1 (default 1), mixed toward identity BEFORE fine color/tone.
    */
   readonly lutIntensity?: number;
 }
@@ -75,21 +74,29 @@ export interface StarburstSettings {
 export interface TextureSettings {
   readonly grain: GrainSettings;
   readonly vignette: VignetteSettings;
-  readonly halation: HalationSettings;
+  /** Legacy import compatibility only; the renderer does not execute halation. */
+  readonly halation?: HalationSettings;
   /**
-   * 0..1 — FINAL-PHOTO-ONLY highlight chroma relief: as luma approaches clipping the
+   * 0..1 — shared preview/photo highlight chroma relief: as luma approaches clipping the
    * pixel is pulled toward its own luma (channel-clipping color shifts soften), luma
-   * itself untouched. The preview never runs it (仅成片 stage), so it must stay subtle
-   * enough not to break Color/Tone WYSIWYG (0.04 ≈ barely visible).
+   * itself untouched. Renderer v4 applies the identical stage in preview and photo.
    */
   readonly deharsh?: number;
   readonly starburst?: StarburstSettings;
+}
+export interface RecipeInfo {
+  readonly version: string;
+  readonly status: 'approximation' | 'candidate' | 'measured' | 'passthrough';
+  readonly colorContract: 'camera18-srgb-ci-v1';
+  readonly datasetId?: string;
 }
 export interface CameraProfile {
   readonly id: string;
   /** User-visible production name. Describes the photographic feel, never a third-party brand. */
   readonly name: string;
   readonly displayName?: string;
+  readonly recipe?: RecipeInfo;
+  readonly passthrough?: boolean;
   /**
    * Development-only calibration metadata (e.g. the real target camera). The validator strips
    * this at runtime, so it can never reach production state or the UI.
@@ -98,7 +105,8 @@ export interface CameraProfile {
   /** Optional: the passthrough ORIG profile carries no aperture identity. */
   readonly aperture?: ApertureSettings;
   readonly ui: ProfileUi;
-  readonly raw: RawAdjustments;
+  /** Legacy import compatibility only; processed capture does not execute RAW controls. */
+  readonly raw?: RawAdjustments;
   readonly tone: ToneSettings;
   readonly color: GlobalColorAdjustments;
   readonly texture: TextureSettings;

@@ -104,7 +104,14 @@ Export compliance is pre-answered by `ITSAppUsesNonExemptEncryption: false` in `
 
 ## Calibration
 
-On the camera screen, long-press with three fingers for about two seconds. Import a JSON file from Files, paste JSON, reload the saved override, or reset to bundled defaults. A valid import is stored in the app Documents directory as `camera-profiles.override.json` and applies immediately. Invalid data shows a validation error and does not replace the active configuration.
+Camera styles share one native renderer (`CameraProfileRenderer.swift`). Built-in recipes
+ship without added grain. Recipe version/source diagnostics live behind the existing
+testing gate; saved overrides are preserved. Export an override before resetting defaults.
+
+[Calibration workflow](docs/相机校准流程.md) documents paired data, candidate LUT fitting,
+independent evaluation, and the macOS native `self-test` / `render` / `probes` commands.
+`tools/look-tuner.html` edits recipes and compares native-rendered images; it has no separate
+filter implementation. Existing styles are creative approximations, not measured replicas.
 
 ## Verification
 

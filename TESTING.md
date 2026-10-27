@@ -1,5 +1,14 @@
 # 测试标准（打包门槛）
 
+## 2026-10-27 干净基线与校准回归
+
+- 先导出手机 override，确认开发面板 source/version/指纹；恢复内置后八种模式 grain=0。旧 override 必须保持原值，不静默覆盖。
+- 同一输入比较旧／新成片：变化主要来自关闭额外颗粒；既有色彩／影调不能意外漂移。ORIG bytes 相同。
+- deharsh 预览和成片共享，肤色／高光差异与预览帧率、温升须真机验收。其他空间效果不被当作输入校准。
+- macOS 先运行 `bash scripts/native-calibration.sh self-test`，再用 render/probes；与应用共同编译 CameraProfileRenderer.swift。Linux 不能替代验证。
+- `node scripts/calibration-check.js` 验证合成拟合、独立场景、样本泄漏拒绝、候选状态及原生结果匹配；不代表实体相机还原度。
+- 新发布流程见 `docs/相机校准流程.md`。未验证的候选不得自动替换生产配方。历史清单中颗粒／halation／DEMO 描述属于旧版本，以当前实际渲染阶段为准。
+
 ## 2026-10-09 风格与双列卡片回归（本轮必须真机验收）
 
 - 同一构图拍 ORIG / GRIT N / GRIT P：绿植在 N 中偏蓝绿、在 P 中偏黄绿；N 的红色更柔和、蓝色更克制。晴天、阴天、室内各一组，禁止仅凭亮度差判定风格有区别。
