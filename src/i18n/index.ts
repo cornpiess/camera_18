@@ -58,9 +58,9 @@ const en = {
   permDeniedStatus:
     'Camera access is currently disabled. Enable it in Settings — the camera is only used for the viewfinder and photos.',
   permExplainer:
-    'Camera 18 simulates classic film cameras. The camera is used for the live viewfinder; photos are saved with add-only photo access.',
+    'Camera 18 simulates classic film cameras. The camera is used for the live viewfinder; photo access lets it finish high-quality photos and preserve their originals.',
   permDefaultExplainer:
-    'Camera 18 simulates classic film cameras. It needs the camera for the viewfinder and photo access (add-only) to save your shots.',
+    'Camera 18 simulates classic film cameras. It needs the camera for the viewfinder and photo access to finish and save your shots.',
   openSettings: 'Open Settings',
   continueLabel: 'Continue',
   retryCamera: 'Retry Camera',
@@ -151,8 +151,8 @@ const zh: Record<keyof typeof en, string> = {
   cameraAccessRequired: '需要相机权限',
   cameraEngineError: '相机引擎错误',
   permDeniedStatus: '相机访问已被禁用。请在设置中开启——相机仅用于取景和拍摄照片。',
-  permExplainer: 'Camera 18 模拟经典胶片相机。相机仅用于实时取景；保存照片只需“添加照片”权限。',
-  permDefaultExplainer: 'Camera 18 模拟经典胶片相机。需要相机用于取景，并使用“添加照片”权限保存拍摄的照片。',
+  permExplainer: 'Camera 18 模拟经典胶片相机。照片权限用于完成高画质照片、应用相机风格并保留原图。',
+  permDefaultExplainer: 'Camera 18 模拟经典胶片相机。需要相机用于取景、拍照，并通过照片权限完成和保存照片。',
   openSettings: '打开设置',
   continueLabel: '继续',
   retryCamera: '重试相机',

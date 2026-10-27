@@ -59,7 +59,7 @@ step('npm run verify（typecheck + lint + doctor）', () => {
 
 // Shared camera-character regression checks (CPU reference, not native pixel QA).
 step('camera look regression + tone guardrails', () => {
-  for (const script of ['scripts/look-check.js', 'scripts/tone-audit.js', 'scripts/calibration-check.js']) {
+  for (const script of ['scripts/look-check.js', 'scripts/tone-audit.js', 'scripts/calibration-check.js', 'scripts/capture-check.js']) {
     const r = run('node', [script]);
     must(r.code === 0, `${script} failed:\n${r.stdout}\n${r.stderr}`);
     console.log(r.stdout.trim());
@@ -87,6 +87,7 @@ step('Swift 括号配平', () => {
   const files = [
     'modules/camera-engine/ios/CameraEngineModule.swift',
     'modules/camera-engine/ios/CameraProfileRenderer.swift',
+    'modules/camera-engine/ios/CameraPhotoStore.swift',
     'tools/native-calibration/main.swift',
     'modules/monetization/ios/MonetizationModule.swift',
   ];

@@ -65,6 +65,12 @@ export type CapturedPhoto = {
 
 /** Background pipeline outcome (Camera DNA → HEIF → PhotoKit finished or failed). */
 export type PhotoProcessedEvent = {
+  captureID?: string;
+  recovered?: boolean;
+  capturedAt?: number;
+  actualWidth?: number;
+  actualHeight?: number;
+  delivery?: 'direct' | 'deferred';
   ok: boolean;
   fileUri?: string | null;
   thumbnailUri?: string | null;
@@ -103,7 +109,7 @@ export class CameraEngineError extends Error {
 type NativeCameraEngine = {
   startCamera(): Promise<boolean>;
   stopCamera(): Promise<void>;
-  capturePhoto(equivalentMM: number): Promise<CapturedPhoto>;
+  capturePhoto(equivalentMM: number, captureID: string): Promise<CapturedPhoto>;
   setAperture(fStop: number): Promise<void>;
   /**
    * Drag-preview aperture: coalesced natively (≤1 lockForConfiguration / 0.12s,
@@ -240,7 +246,7 @@ function typed<T>(operation: Promise<T>): Promise<T> {
 
 export const startCamera = (): Promise<boolean> => typed(NativeModule.startCamera());
 export const stopCamera = (): Promise<void> => typed(NativeModule.stopCamera());
-export const capturePhoto = (equivalentMM: number): Promise<CapturedPhoto> => typed(NativeModule.capturePhoto(equivalentMM));
+export const capturePhoto = (equivalentMM: number, captureID: string): Promise<CapturedPhoto> => typed(NativeModule.capturePhoto(equivalentMM, captureID));
 export const setAperture = (fStop: number): Promise<void> => typed(NativeModule.setAperture(fStop));
 export const setApertureCoalesced = (fStop: number): Promise<void> => typed(NativeModule.setApertureCoalesced(fStop));
 export const setFocusPoint = (x: number, y: number): Promise<void> => typed(NativeModule.setFocusPoint(x, y));

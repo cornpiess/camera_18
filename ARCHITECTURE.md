@@ -7,21 +7,24 @@
 | 层 | 职责 | 实现 |
 |---|---|---|
 | UI／配置 | 选择相机、状态、配方验证与 override | Expo / React Native / TypeScript |
-| 采集 | 真实镜头路由、AF/AE/AWB、真实光圈、快门 | CameraEngineModule.swift / AVFoundation |
+| 采集 | 苹果多摄路由、AF/AE/AWB、主动真实光圈、快门 | CameraEngineModule.swift / AVFoundation |
 | 输入适配 | 技术输入差异，独立于相机风格 | CameraInputNormalizer；未实测时 identity |
 | 相机响应 | 统一颜色／影调／可选质感 | CameraProfileRenderer.swift + JSON/LUT |
-| 输出 | MTKView 预览；后台编码及 PhotoKit 保存 | 共用一个 CameraEngineGPU.ciContext |
+| 输出 | MTKView预览；最终底片获取、持久任务、同资产风格编辑 | CameraPhotoStore.swift；共享CIContext |
 
 不新增按品牌分支、不加用户手动曝光／滤镜强度、不做软件虚化或在线 AI。
 
 ## 采集不变量
 
-- AVCaptureSession .photo；input 始终物理镜头。
-- 13mm → UltraWide；26/35/52 → 同一 Wide，仅改 videoZoomFactor；Tele → 物理 Telephoto。缺镜头即隐藏。
-- 换 input 统一重建参数；crossfade、禁拍窗和 2.5s watchdog 保留。
-- Aperture Manual / Shutter AUTO / ISO AUTO / AF·AWB AUTO；缺真实能力则诚实报告 fixed。
-- processed JPEG 源；balanced，快拍能力门控，Deferred Delivery 关闭。
-- capture 完成即结算快门 promise，后处理走串行 processingQueue，结果经 onPhotoProcessed 回 JS。
+- `.photo` + `.quality`，默认苹果多摄自动选择；主动真实光圈控制才约束主摄，焦段表示构图意图。
+- 支持时24MP延迟交付，否则直接高质量12MP；HEIF优先，不为像素数量默认选48MP。
+- 支持的ZSL/Responsive开启，Fast Capture Prioritization关闭；统一资源预热。
+- 风格推荐光圈不自动执行；AF/AE/AWB自动，曝光和光圈以成片EXIF为准。
+- 曝光结束即释放快门，代理只能入库，最终底片才可渲染。PhotoKit非破坏性编辑保持一个相册资产。
+- 源/代理、配方、资产ID与错误持久化；恢复幂等；结果按captureID配对。
+- 无读取权限：直接质量底片→同源风格→单图入库，原始底片/配方保留本地。
+
+具体生命周期、边界和工程验收见 [高画质采集架构](docs/高画质采集架构.md)。
 
 ## 唯一渲染实现
 

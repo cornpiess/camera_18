@@ -1,18 +1,6 @@
-/**
- * Focal-stop model for the in-finder focal dial — PHYSICAL LENS ROUTING (user spec):
- *
- * The capture input is ALWAYS a physical camera (never the virtual triple/dual
- * device). Each stop maps to exactly one real lens:
- *   13mm        -> builtInUltraWideCamera  (its own fixed aperture)
- *   26/35/52mm  -> builtInWideAngleCamera  (ONE physical main; 35/52 are crop zooms,
- *                                          so the main's real variable iris — when
- *                                          the hardware has one — serves all three)
- *   tele        -> builtInTelephotoCamera  (its own fixed aperture)
- *
- * Lens switches (13 <-> wide <-> tele) swap the physical input natively
- * (CameraEngine.setLens); 26/35/52 only move videoZoomFactor on the main
- * (CameraEngine.setZoomFactor) — no input churn inside the trio.
- */
+/** Focal stops express framing intent. Native capture normally uses Apple's virtual
+ * multi-camera device; these lens/zoom fields also support physical fallback and
+ * explicit main-lens iris control without adding a second UI mode. */
 
 export type PhysicalLens = 'ultrawide' | 'wide' | 'tele';
 
@@ -21,9 +9,9 @@ export interface FocalStop {
   readonly id: string;
   /** 35mm-equivalent focal length in millimeters (displayed on the dial; EXIF stamped). */
   readonly mm: number;
-  /** The PHYSICAL camera this stop resolves to. */
+  /** Preferred lens for physical fallback / explicit iris control. */
   readonly lens: PhysicalLens;
-  /** videoZoomFactor applied on that physical device (1.0 for ultrawide/tele stops). */
+  /** Crop factor in physical-lens coordinates (native maps virtual devices) (1.0 for ultrawide/tele stops). */
   readonly zoom: number;
 }
 

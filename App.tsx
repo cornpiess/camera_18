@@ -1,6 +1,7 @@
 // diagLog must be imported first: it self-installs on import so that any module-evaluation
 // error from the imports below (native module resolution included) is already captured.
 import { recordDiag } from './src/utils/diagLog';
+import { takeCaptureReservation } from './src/camera/captureReceipts';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
@@ -32,6 +33,7 @@ import {
   type CapturedPhoto,
   type CameraCapabilities,
   type CameraAuthorizationStatus,
+  type CameraEngineErrorCode,
 } from './src/camera/CameraEngine';
 // LoadCameraState, focal model, aperture visual linkage
 import { loadCameraState, saveCameraState, type CameraState } from './src/camera/cameraStateStore';
@@ -288,11 +290,10 @@ function CameraAppScreen(): React.JSX.Element {
   // The trial reservation owned by the capture in flight (shutter → saved photo).
   // Snapshot matches the profile that was active AT SHUTTER TIME, so switching
   // cameras mid-processing still commits to the right counter.
-  // Trial reservations in flight, FIFO: the native pipeline is a serial queue, so
-  // onPhotoProcessed events arrive in capture order and settle the OLDEST reservation.
-  // (A single slot broke under quick double-taps: capture 2's reserve overwrote
-  // capture 1's before capture 1's pipeline event settled.)
-  const pendingTrialQueueRef = useRef<Array<{ profileId: string; reservedAt: number }>>([]);
+  // Delayed final photos can complete out of order. Every reservation owns a
+  // capture ID; recovered/background/free shots never consume a different shot's slot.
+  const latestDeliveredCaptureAtRef = useRef(0);
+  const pendingTrialQueueRef = useRef<Array<{ captureID: string; profileId: string; reservedAt: number }>>([]);
   // Subscription-stable refs for the photo-processed listener: the effect below must
   // NOT re-subscribe on every trial commit (remove + re-add races a native event
   // fired in between — the exact event the trial count depends on). Refs keep the
@@ -596,12 +597,12 @@ function CameraAppScreen(): React.JSX.Element {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active' || !cameraRunningRef.current) return;
       CameraEngine.startCamera()
-        .then(() => {
+        .then(async () => {
           setPermissionState('authorized');
           const engaged = focalStopsRef.current.find((stop) => stop.mm === currentFocalMmRef.current);
           if (engaged) {
-            CameraEngine.setLens(engaged.lens).catch(() => {});
-            CameraEngine.setZoomFactor(engaged.zoom, engaged.mm).catch(() => {});
+            await CameraEngine.setLens(engaged.lens);
+            await CameraEngine.setZoomFactor(engaged.zoom, engaged.mm);
           }
         })
         .catch((err: unknown) => {
@@ -644,10 +645,6 @@ function CameraAppScreen(): React.JSX.Element {
   // re-applied unchanged profile no longer rebuilds the compiled color cube at all.
 
   // Recommended-aperture default (product decision 2026-09-13): SELECTING a camera snaps
-  // the ring to that profile's aperture.preferred (e.g. Ricoh GR → ƒ/2.8); the user then
-  // adjusts from there. Guarded by profile id so the aperture-driven effectiveProfile
-  // re-renders never re-apply it mid-drag (the effect would otherwise fight the finger).
-  const preferredApertureProfileRef = useRef<string | null>(null);
   // Which mock mode the diag menu forced (null = real hardware). The hardware-readback
   // sync after setAperture must NOT run in mock-variable: capabilities would report the
   // REAL lens's fixed 1.8 and snap the ring away from the chosen stop.
@@ -684,55 +681,8 @@ function CameraAppScreen(): React.JSX.Element {
       .catch(() => {});
   }, []);
 
-  /**
-   * SIGNATURE APERTURE (spec §1): the profile's aperture.preferred is a REAL recommended
-   * aperture on a variable lens — clamp to the live hardware range, commit through the
-   * real setAperture, then sync the UI from the hardware readback (the iris may settle
-   * on the nearest physical detent). Fixed lenses never apply it; ORIG has none; in
-   * mock-variable the readback is skipped (capabilities would report the REAL lens).
-   */
-  const applySignatureAperture = useCallback(async (profile: CameraProfile) => {
-    const preferred = profile.aperture?.preferred;
-    if (typeof preferred !== 'number' || !Number.isFinite(preferred) || preferred <= 0) return;
-    if (mockApertureModeRef.current === 'mock-fixed') return;
-    // Live range first (mock-variable overwrites it with the project f/1.48–f/4 range);
-    // the startup capabilities snapshot is only a fallback.
-    const min = apertureRange?.min ?? capabilitiesRef.current?.minAperture ?? preferred;
-    const max = apertureRange?.max ?? capabilitiesRef.current?.maxAperture ?? preferred;
-    const clamped = Math.min(Math.max(preferred, min), max);
-    try {
-      await CameraEngine.setAperture(clamped);
-      confirmedApertureRef.current = clamped;
-      if (apertureDraggingRef.current) return;
-      setCurrentAperture(clamped);
-      if (mockApertureModeRef.current === null) {
-        // Real variable hardware: the iris may settle on the nearest physical stop —
-        // the UI shows the HARDWARE truth, not the request.
-        const capabilities = await CameraEngine.getCapabilities();
-        const real = capabilities.activeAperture;
-        if (typeof real === 'number' && Number.isFinite(real) && real > 0) {
-          confirmedApertureRef.current = real;
-          if (!apertureDraggingRef.current) {
-            setCurrentAperture(real);
-          }
-        }
-      }
-    } catch (err: unknown) {
-      // Hardware refused — leave the ring where the user had it, journal the reason.
-      recordDiag('warn', `signature aperture ${preferred} rejected: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [apertureRange]);
-
-  useEffect(() => {
-    if (!isCameraRunning || !activeProfile) return;
-    if (preferredApertureProfileRef.current === activeProfile.id) return;
-    preferredApertureProfileRef.current = activeProfile.id;
-    // ORIG (passthrough) carries no signature aperture: switching to it must NOT touch
-    // the current real aperture state (user spec). A FIXED lens never applies the
-    // signature at all — the ring shows the lens's real mechanical aperture only.
-    if (activeProfile.id === 'negative_film') return;
-    if (apertureVariable) void applySignatureAperture(activeProfile);
-  }, [activeProfile, isCameraRunning, apertureVariable, apertureRange, applySignatureAperture]);
+  // A profile's recommended aperture is a visual guide, never an automatic
+  // exposure command. Only an explicit ring gesture controls the real iris.
 
   // Native -> ApertureState sync: the Camera Control slider (and any native aperture
   // source) flows back here so the SCREEN RING always shows the same f-number. There is
@@ -779,7 +729,7 @@ function CameraAppScreen(): React.JSX.Element {
       // Trial bookkeeping (spec §3): ONLY a successfully SAVED photo consumes a
       // free shot. Any pipeline failure rolls the reservation back — the count
       // must survive failed captures untouched.
-      const pending = pendingTrialQueueRef.current.shift();
+      const pending = takeCaptureReservation(pendingTrialQueueRef.current, event?.captureID);
       if (!event?.ok) {
         const code = String(event?.errorCode ?? 'unknown');
         recordDiag('error', `capture pipeline: FAILED (${code}): ${String(event?.detail ?? '')}`);
@@ -788,7 +738,7 @@ function CameraAppScreen(): React.JSX.Element {
           recordDiag('info', `trial: rolled back reservation (${pending.profileId})`);
         }
         if (code === 'ERR_PHOTO_PERMISSION_DENIED') setPhotoPermDenied(true);
-        showTransientError(String(event?.detail ?? 'Photo save failed.'));
+        showTransientError(resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
         return;
       }
       if (pending) {
@@ -807,8 +757,11 @@ function CameraAppScreen(): React.JSX.Element {
         showTransientError(t('dnaFallbackSaved'));
       }
       recordDiag('info', `capture pipeline: saved (thumb=${Boolean(event.thumbnailUri)}, codec=${event.codec ?? '?'}, eq=${event.equivalentFocal ?? '?'}mm)`);
+      const capturedAt = event.capturedAt ?? 0;
+      if (capturedAt < latestDeliveredCaptureAtRef.current) return;
+      latestDeliveredCaptureAtRef.current = capturedAt;
       if (event.fileUri) setLastCaptureFileUri(event.fileUri);
-      const thumbUri = event.thumbnailUri ?? event.fileUri ?? null;
+      const thumbUri = event.thumbnailUri ?? null;
       if (thumbUri) {
         // RN Image caches by URI: the native persisted thumbnail path is STABLE, so the
         // chip would keep showing the first shot's bitmap. Copy to a per-capture display
@@ -934,7 +887,6 @@ function CameraAppScreen(): React.JSX.Element {
     const seq = ++focalSelectSeqRef.current;
     const superseded = () => seq !== focalSelectSeqRef.current;
     const previousMm = currentFocalMm;
-    const previousLens = activeLensRef.current;
     try {
       recordDiag('info', `focal: select ${stop.mm}mm lens=${stop.lens} (zoom=${stop.zoom}) from ${previousMm}mm`);
       await CameraEngine.setLens(stop.lens);
@@ -961,12 +913,6 @@ function CameraAppScreen(): React.JSX.Element {
           min: capabilities.minAperture ?? 1.48,
           max: capabilities.maxAperture ?? 4,
         });
-        // FIXED → VARIABLE lens switch (13mm/Tele → Wide): the current profile's
-        // signature aperture becomes REAL again — apply it (spec §1). Wide→Wide
-        // (26/35/52) never reaches the input swap, so the user's aperture survives.
-        if (previousLens !== 'wide' && stop.lens === 'wide' && activeProfile && activeProfile.id !== 'negative_film') {
-          void applySignatureAperture(activeProfile);
-        }
       } else {
         setApertureRange(null);
         const fixed = capabilities.activeAperture ?? 1.8;
@@ -982,7 +928,7 @@ function CameraAppScreen(): React.JSX.Element {
       if (previousMm != null) setCurrentFocalMm(previousMm);
       showTransientError(resolveErrorMessage(err));
     }
-  }, [currentFocalMm, showTransientError, activeProfile, applySignatureAperture]);
+  }, [currentFocalMm, showTransientError]);
 
   const handleCapturePhoto = async () => {
     if (capturePhase === 'capturing') return;
@@ -994,8 +940,9 @@ function CameraAppScreen(): React.JSX.Element {
     // -------------------------------------------------------------
     const gateProfile = activeProfile;
     // THIS press's own reservation — the catch path rolls back exactly this one,
-    // never a newer capture's (FIFO queue + per-capture handle).
-    let trialReservation: { profileId: string; reservedAt: number } | null = null;
+    // never a newer capture's reservation.
+    const captureID = `capture-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let trialReservation: { captureID: string; profileId: string; reservedAt: number } | null = null;
     if (gateProfile) {
       const access = accessFor(gateProfile.id, isPro, trialUsed, gateProfile);
       if (access.kind === 'requiresPro') {
@@ -1008,11 +955,11 @@ function CameraAppScreen(): React.JSX.Element {
       }
       if (access.kind === 'trial') {
         // A stale reservation (timeout with no pipeline event ever arriving) must
-        // not eat slots forever: the 20s capture timeout + margin covers it.
+        // not eat slots forever: allow deferred processing and permission dialogs to finish.
         const now = Date.now();
-        const stale = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt > 30_000);
+        const stale = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt > 300_000);
         if (stale.length > 0) {
-          pendingTrialQueueRef.current = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt <= 30_000);
+          pendingTrialQueueRef.current = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt <= 300_000);
           stale.forEach((r) => rollbackTrialShot(r.profileId));
         }
         const reserved = reserveTrialShot(gateProfile.id);
@@ -1022,7 +969,7 @@ function CameraAppScreen(): React.JSX.Element {
           setPaywall({ source: 'trialExhausted', profileId: gateProfile.id });
           return;
         }
-        trialReservation = { profileId: gateProfile.id, reservedAt: now };
+        trialReservation = { captureID, profileId: gateProfile.id, reservedAt: now };
         pendingTrialQueueRef.current.push(trialReservation);
       }
     }
@@ -1051,7 +998,7 @@ function CameraAppScreen(): React.JSX.Element {
       // processing queue and report via onPhotoProcessed — they never hold the shutter.
       const currentStop = focalStopsRef.current.find((stop) => stop.mm === currentFocalMmRef.current);
       const result: CapturedPhoto | undefined = await Promise.race([
-        CameraEngine.capturePhoto(currentStop?.mm ?? 0),
+        CameraEngine.capturePhoto(currentStop?.mm ?? 0, captureID),
         new Promise<never>((_resolve, reject) => {
           timeoutId = setTimeout(
             () => reject(new Error('Capture timed out. The photo may still reach your library.')),

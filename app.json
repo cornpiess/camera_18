@@ -21,7 +21,7 @@
         ],
         "NSCameraUsageDescription": "Camera 18 needs camera access to show the live viewfinder and take photos.",
         "NSPhotoLibraryAddUsageDescription": "Camera 18 saves the photos you take to your photo library.",
-        "NSPhotoLibraryUsageDescription": "Camera 18 reads your photo library to show your recently taken photos.",
+        "NSPhotoLibraryUsageDescription": "Camera 18 uses photo access to finish high-quality photos and apply your chosen camera style while preserving the original.",
         "LSApplicationQueriesSchemes": ["photos-redirect", "photos"]
       }
     },

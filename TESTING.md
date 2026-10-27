@@ -114,3 +114,10 @@ npm run prepackage-check
 - **「Cannot find native module」** → 检查 expo-module.config.json / podspecPath / autolinking（静态门槛 #4、#6）。
 - **Archive 签名失败** → 证书额度，账号侧吊销（AGENTS 1.1）。
 - **Swift 编译错误** → 本机无 swiftc，静态门槛只能拦截结构问题；Swift 改动必须在汇报中标注「待 CI 构建验证」，CI 红了先修。
+
+
+## 2026-10-27 高画质采集工程验收
+
+本节取代历史balanced/固定物理输入/仅添加权限预期。自动化：`node scripts/capture-check.js`已接入prepackage，覆盖乱序、重复、恢复与无名额拍摄的ID结算。
+
+设备工程验收由开发承担，流程与故障恢复矩阵见`docs/高画质采集架构.md`。静态验证不代表24MP实拍、PhotoKit代理最终化或光圈与融合组合已验证。
