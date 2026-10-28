@@ -170,6 +170,7 @@ node -e "const Y=require('yaml'),fs=require('fs');for(const f of ['.github/workf
 - 2026-10-28：屏幕/硬件快门共用门禁，原生再次检查统一采集状态；光圈超时必须回读，不能乐观成功。input/zoom事务失败回滚，旧事务不得干扰新选择。
 - 试拍按captureID持久化预留/提交，成功结果用持久outbox重放，结算持久化成功才ACK；可恢复失败保留预留，不能重复扣或放掉另一张的名额。
 - 完整分辨率最近照片跨启动保留；缩略图不能充当大图。有限后台任务到期保留日志，原图仅由用户显式管理，失败任务可重试/导出。
+- 2026-10-28：单张查看器使用CameraPhotoViewer原生UIScrollView及固定全尺寸快照；分享不重编码，信息读实际EXIF。删除必须Photos成功才移除对应预览，删除时间高水位与outbox结算保留。CameraOrientationSubscriber仅在viewer存在时开放横屏，其余页面仍竖屏；不得全局解除拍摄方向约束。
 - 技术方案、边界和工程验收见 `docs/高画质采集架构.md`；校准流程见 `docs/相机校准流程.md`。
 
 ---

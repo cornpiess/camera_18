@@ -17,7 +17,9 @@
         "CFBundleDisplayName": "Camera 18",
         "ITSAppUsesNonExemptEncryption": false,
         "UISupportedInterfaceOrientations": [
-          "UIInterfaceOrientationPortrait"
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
         ],
         "NSCameraUsageDescription": "Camera 18 needs camera access to show the live viewfinder and take photos.",
         "NSPhotoLibraryAddUsageDescription": "Camera 18 saves the photos you take to your photo library.",

@@ -347,6 +347,7 @@ final class CameraPhotoStore {
       try fm.createDirectory(at: latestDirectory, withIntermediateDirectories: true)
       let persistent = latestDirectory.appendingPathComponent(job.id).appendingPathExtension(final.pathExtension)
       if !fm.fileExists(atPath: persistent.path) { try fm.copyItem(at: final, to: persistent) }
+      facts["profileName"] = profile(job)["displayName"] ?? profile(job)["name"]
       facts["fileUri"] = persistent.absoluteString
       facts["thumbnailUri"] = thumbURI
       facts["assetLocalIdentifier"] = job.assetID ?? ""
@@ -431,6 +432,10 @@ final class CameraPhotoStore {
   private func replayOutcomes() {
     for var facts in outcomes() {
       facts["recovered"] = true
+      if let id = facts["jobID"] as? String, fm.fileExists(atPath: deletedURL(id).path) {
+        facts["previewDeleted"] = true
+        facts.removeValue(forKey: "fileUri"); facts.removeValue(forKey: "thumbnailUri")
+      }
       DispatchQueue.main.async { self.eventSink?(facts) }
     }
   }
@@ -478,15 +483,112 @@ final class CameraPhotoStore {
   func snapshot(_ completion: @escaping ([String: Any]) -> Void) {
     queue.async { completion(self.stateValue()) }
   }
+  // Queue-owned lookup. Deletion markers survive interruption during latest.json
+  // cleanup, and preserve the timestamp without a stale image.
+  private func latestFacts() -> [String: Any]? {
+    let manifest = directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest/latest.json")
+    guard let data = try? Data(contentsOf: manifest),
+          var facts = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    if let id = facts["jobID"] as? String, fm.fileExists(atPath: deletedURL(id).path) {
+      facts["previewDeleted"] = true
+      facts.removeValue(forKey: "fileUri"); facts.removeValue(forKey: "thumbnailUri")
+    }
+    if facts["previewDeleted"] as? Bool == true { return facts }
+    guard let uri = facts["fileUri"] as? String, let file = URL(string: uri), file.isFileURL,
+          fm.fileExists(atPath: file.path) else { return nil }
+    return facts
+  }
   func latest(_ completion: @escaping ([String: Any]?) -> Void) {
-    queue.async {
-      let url = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest/latest.json")
-      guard let data = try? Data(contentsOf: url),
-            let facts = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let uri = facts["fileUri"] as? String, let file = URL(string: uri), self.fm.fileExists(atPath: file.path) else {
-        completion(nil); return
+    queue.async { completion(self.latestFacts()) }
+  }
+
+  private var viewerOpening = false // main thread only
+  private func deletedURL(_ id: String) -> URL {
+    directory.deletingLastPathComponent().appendingPathComponent("Camera18Deleted", isDirectory: true)
+      .appendingPathComponent(id).appendingPathExtension("json")
+  }
+
+  /// Pin a full-size copy before presentation. Delivering another pending photo
+  /// can clean derived latest files without changing/deleting this viewer's image.
+  func showLatest(profileNames: [String: String], completion: @escaping (Result<[String: Any], CameraEngineError>) -> Void) {
+    DispatchQueue.main.async {
+      guard !self.viewerOpening, !CameraOrientationSubscriber.viewingPhoto else { completion(.failure(.captureBusy)); return }
+      self.viewerOpening = true
+      self.queue.async {
+        var snapshot: (URL, [String: Any], UIImage)?
+        let cache = self.fm.temporaryDirectory.appendingPathComponent("Camera18Viewer", isDirectory: true)
+        do {
+          guard var facts = self.latestFacts() else { throw CameraEngineError.processingFailed }
+          guard facts["previewDeleted"] as? Bool != true, let uri = facts["fileUri"] as? String,
+                let source = URL(string: uri), source.isFileURL else { throw CameraEngineError.processingFailed }
+          try? self.fm.removeItem(at: cache) // no viewer is active; removes a crash's stale copy
+          try self.fm.createDirectory(at: cache, withIntermediateDirectories: true)
+          let file = cache.appendingPathComponent("photo").appendingPathExtension(source.pathExtension)
+          try self.fm.copyItem(at: source, to: file)
+          guard let image = UIImage(contentsOfFile: file.path) else { throw CameraEngineError.processingFailed }
+          if facts["profileName"] == nil, let id = facts["profileID"] as? String { facts["profileName"] = profileNames[id] }
+          snapshot = (file, facts, image)
+        } catch { try? self.fm.removeItem(at: cache) }
+        let loaded = snapshot
+        DispatchQueue.main.async {
+          self.viewerOpening = false
+          guard let (file, facts, image) = loaded, let presenter = self.presenter(),
+                !presenter.isBeingDismissed, !presenter.isBeingPresented,
+                presenter.viewIfLoaded?.window != nil else { completion(.failure(.processingFailed)); return }
+          let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
+            self.deleteViewedPhoto(facts, completion: callback)
+          }, onClose: { deleted in
+            // Viewer and share sheet have released their ownership before removal.
+            self.queue.async { try? self.fm.removeItem(at: cache) }
+            completion(.success(["deleted": deleted, "captureID": facts["captureID"] ?? ""]))
+          })
+          CameraOrientationSubscriber.viewingPhoto = true
+          presenter.present(viewer, animated: !UIAccessibility.isReduceMotionEnabled)
+        }
       }
-      completion(facts)
+    }
+  }
+
+  private func deleteViewedPhoto(_ facts: [String: Any], completion: @escaping (String?) -> Void) {
+    let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+    Self.authorize {
+      self.queue.async {
+        guard Self.canReadOwnPhotos, let assetID = facts["assetLocalIdentifier"] as? String, !assetID.isEmpty,
+              let jobID = facts["jobID"] as? String, UUID(uuidString: jobID) != nil else {
+          DispatchQueue.main.async { completion(zh ? "请允许访问这张系统相册照片后重试。照片和预览均已保留。" : "Allow access to this photo in Settings, then retry. The photo and preview are kept.") }; return
+        }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard assets.count == 1 else {
+          DispatchQueue.main.async { completion(zh ? "无法访问对应的相册照片，它可能已被删除或不在允许访问的范围内。App 预览已保留。" : "The Photos asset is unavailable. It may have been deleted or excluded from allowed access. The app preview is kept.") }; return
+        }
+        PHPhotoLibrary.shared().performChanges({ PHAssetChangeRequest.deleteAssets(assets) }) { success, error in
+          self.queue.async {
+            guard success else {
+              DispatchQueue.main.async { completion(error?.localizedDescription ?? (zh ? "系统未完成删除，照片已保留。" : "Deletion was not completed. The photo is kept.")) }; return
+            }
+            do {
+              let marker = self.deletedURL(jobID)
+              try self.fm.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+              var tombstone = facts
+              tombstone["previewDeleted"] = true
+              tombstone.removeValue(forKey: "fileUri"); tombstone.removeValue(forKey: "thumbnailUri")
+              let data = try JSONSerialization.data(withJSONObject: tombstone)
+              try data.write(to: marker, options: .atomic)
+              let manifest = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest/latest.json")
+              let current = (try? Data(contentsOf: manifest)).flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+              if current?["jobID"] as? String == jobID {
+                // Keep its timestamp as a high-water mark: older recovered photos
+                // must not become the newest photo after this explicit deletion.
+                try data.write(to: manifest, options: .atomic)
+              }
+              if let uri = facts["fileUri"] as? String, let file = URL(string: uri), file.isFileURL { try? self.fm.removeItem(at: file) }
+              DispatchQueue.main.async { completion(nil) }
+            } catch {
+              DispatchQueue.main.async { completion(zh ? "系统相册照片已删除，但本地预览清理失败，请重启后重试。" : "The photo was deleted from Photos, but local preview cleanup failed. Restart the app and try again.") }
+            }
+          }
+        }
+      }
     }
   }
 

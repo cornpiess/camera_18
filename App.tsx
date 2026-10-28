@@ -10,10 +10,7 @@ import {
   Animated,
   Dimensions,
   AppState,
-  Image,
   Linking,
-  Modal,
-  ScrollView,
   Platform,
   PanResponder,
   SafeAreaView,
@@ -288,10 +285,8 @@ function CameraAppScreen(): React.JSX.Element {
   }, []);
   const [capturePhase, setCapturePhase] = useState<CapturePhase>('idle');
   const [latestThumbnail, setLatestThumbnail] = useState<string | null>(null);
-  // Durable full-resolution copy of the latest exposure, restored across launches.
-  // The 512px thumbnail is only used in the thumbnail chip.
-  const [lastCaptureFileUri, setLastCaptureFileUri] = useState<string | null>(null);
-  const [photoViewerUri, setPhotoViewerUri] = useState<string | null>(null);
+  // Native viewer owns a pinned full-resolution snapshot until dismissal.
+  const photoViewerOpenRef = useRef(false);
   // Per-capture display copy of the thumbnail (RN Image caches by URI; the native
   // persisted path is stable, so without this the chip keeps showing the first shot).
   const chipFileRef = useRef<string | null>(null);
@@ -319,6 +314,7 @@ function CameraAppScreen(): React.JSX.Element {
   // Delayed final photos can complete out of order. Every reservation owns a
   // capture ID; recovered/background/free shots never consume a different shot's slot.
   const latestDeliveredCaptureAtRef = useRef(0);
+  const latestDeliveredCaptureIDRef = useRef<string | null>(null);
   const pendingTrialQueueRef = useRef<Array<{ captureID: string; profileId: string; reservedAt: number }>>([]);
   // Subscription-stable refs for the photo-processed listener: the effect below must
   // NOT re-subscribe on every trial commit (remove + re-add races a native event
@@ -341,8 +337,8 @@ function CameraAppScreen(): React.JSX.Element {
     loadCameraState().then((state) => {
       if (!mounted) return;
       cameraStateRef.current = state;
-      // Restore the latest-shot chip: the thumbnail lives at a STABLE Documents path now.
-      if (state.lastThumbUri) setLatestThumbnail(state.lastThumbUri);
+      // Native latest.json is authoritative, including deletion tombstones.
+      // A cached JS thumbnail must never resurrect an already deleted photo.
       // Versioned onboarding gate: absent/older version = first launch (or a new
       // onboarding rev the user hasn't seen). Completing or skipping writes the version.
       if ((state.completedOnboardingVersion ?? 0) < CURRENT_ONBOARDING_VERSION) {
@@ -585,10 +581,10 @@ function CameraAppScreen(): React.JSX.Element {
       if (mounted) { setDeliveryState(state); reconcileTrialReservations(state.captureIDs ?? []); }
     }).catch(() => {});
     CameraEngine.getLatestPhoto().then((photo) => {
-      if (!mounted || !photo?.fileUri || (photo.capturedAt ?? 0) < latestDeliveredCaptureAtRef.current) return;
+      if (!mounted || !photo || (photo.capturedAt ?? 0) < latestDeliveredCaptureAtRef.current) return;
       latestDeliveredCaptureAtRef.current = photo.capturedAt ?? 0;
-      setLastCaptureFileUri(photo.fileUri);
-      if (photo.thumbnailUri) setLatestThumbnail(photo.thumbnailUri);
+      latestDeliveredCaptureIDRef.current = photo.captureID ?? null;
+      setLatestThumbnail(photo.previewDeleted ? null : photo.thumbnailUri ?? null);
     }).catch(() => {});
     return () => { mounted = false; stateSubscription.remove(); shutterSubscription.remove(); deliverySubscription.remove(); };
   }, []);
@@ -871,10 +867,11 @@ function CameraAppScreen(): React.JSX.Element {
         showTransientError(t('dnaFallbackSaved'));
       }
       recordDiag('info', `capture pipeline: saved (thumb=${Boolean(event.thumbnailUri)}, codec=${event.codec ?? '?'}, eq=${event.equivalentFocal ?? '?'}mm)`);
+      if (event.previewDeleted) return; // Trial settlement above still completes exactly once.
       const capturedAt = event.capturedAt ?? 0;
       if (capturedAt < latestDeliveredCaptureAtRef.current) return;
       latestDeliveredCaptureAtRef.current = capturedAt;
-      if (event.fileUri) setLastCaptureFileUri(event.fileUri);
+      latestDeliveredCaptureIDRef.current = event.captureID ?? null;
       const thumbUri = event.thumbnailUri ?? null;
       if (thumbUri) {
         // RN Image caches by URI: the native persisted thumbnail path is STABLE, so the
@@ -1052,7 +1049,7 @@ function CameraAppScreen(): React.JSX.Element {
   }, [currentFocalMm, showTransientError, activeProfile, applySignatureAperture, setOpticsBusy]);
 
   const handleCapturePhoto = async () => {
-    if (isSelectorOpen || isCalibrationOpen || isRadialOpen || showOnboarding || photoViewerUri || paywall) return;
+    if (isSelectorOpen || isCalibrationOpen || isRadialOpen || showOnboarding || photoViewerOpenRef.current || paywall) return;
     if (!canRequestCapture(nativeCaptureStateRef.current, opticsPendingRef.current, captureInFlightRef.current)) return;
 
     // -------------------------------------------------------------
@@ -1646,18 +1643,28 @@ function CameraAppScreen(): React.JSX.Element {
                     <ThumbnailPreview
                       uri={latestThumbnail}
                       onPress={() => {
-                        // In-app full-screen viewer (the system camera's own pattern).
-                        // iOS exposes no public way to open the Photos app from a
-                        // third-party app — photos-redirect:// is semi-private and fails
-                        // outright on current iOS. Prefer this session's full-res temp
-                        // file or the durable full-size copy restored from native storage.
-                        void (async () => {
-                          let uri = lastCaptureFileUri;
-                          if (uri && !new File(uri).exists) uri = null;
-                          if (!uri) uri = (await CameraEngine.getLatestPhoto())?.fileUri ?? null;
-                          if (uri) setPhotoViewerUri(uri);
-                          else showTransientError(t('photoUnavailable'));
-                        })().catch(() => showTransientError(t('photoUnavailable')));
+                        if (photoViewerOpenRef.current) return;
+                        photoViewerOpenRef.current = true;
+                        const names = Object.fromEntries(profiles.map((profile) => [profile.id, profile.displayName ?? profile.name]));
+                        void CameraEngine.showLatestPhoto(names).then(async (result) => {
+                          if (!result.deleted) return;
+                          if (result.captureID === latestDeliveredCaptureIDRef.current) {
+                            setLatestThumbnail(null);
+                            cameraStateRef.current.lastThumbUri = null;
+                            saveCameraState({ lastThumbUri: null });
+                          }
+                          const latest = await CameraEngine.getLatestPhoto();
+                          if (latest && ((latest.capturedAt ?? 0) > latestDeliveredCaptureAtRef.current
+                            || (latest.previewDeleted && (latest.capturedAt ?? 0) === latestDeliveredCaptureAtRef.current))) {
+                            latestDeliveredCaptureAtRef.current = latest.capturedAt ?? 0;
+                            latestDeliveredCaptureIDRef.current = latest.captureID ?? null;
+                            const thumbnail = latest.previewDeleted ? null : latest.thumbnailUri ?? null;
+                            setLatestThumbnail(thumbnail);
+                            cameraStateRef.current.lastThumbUri = thumbnail;
+                            saveCameraState({ lastThumbUri: thumbnail });
+                          }
+                        }).catch(() => showTransientError(t('photoUnavailable')))
+                          .finally(() => { photoViewerOpenRef.current = false; });
                       }}
                     />
                   ) : null}
@@ -1725,43 +1732,6 @@ function CameraAppScreen(): React.JSX.Element {
             apertureSideView={apertureSideView}
             onToggleApertureSideView={() => setApertureSideView((enabled) => !enabled)}
           />
-
-          {/* Full-screen photo viewer: tap the thumbnail to inspect the last shot.
-              The "open in Photos" action is best-effort — photos-redirect:// is
-              semi-private and refuses on some iOS versions; the photo itself is
-              already saved to the library either way. */}
-          <Modal
-            animationType="fade"
-            onRequestClose={() => setPhotoViewerUri(null)}
-            transparent
-            visible={photoViewerUri !== null}
-          >
-            <View style={styles.photoViewer}>
-              <ScrollView key={photoViewerUri} minimumZoomScale={1} maximumZoomScale={6} centerContent
-                contentContainerStyle={{ width: screenDimsRef.current.width, height: screenDimsRef.current.height }}>
-                {photoViewerUri ? <Image resizeMode="contain" source={{ uri: photoViewerUri }}
-                  style={{ width: screenDimsRef.current.width, height: screenDimsRef.current.height }} /> : null}
-              </ScrollView>
-              <TouchableOpacity accessibilityRole="button" accessibilityLabel={t('photoClose')}
-                style={{ position: 'absolute', top: 56, right: 20, padding: 16 }} onPress={() => setPhotoViewerUri(null)}>
-                <Text style={{ color: 'white' }}>{t('photoClose')}</Text>
-              </TouchableOpacity>
-            </View>
-            {photoViewerUri ? (
-              <View pointerEvents="box-none" style={styles.photoViewerActions}>
-                <TouchableOpacity
-                  accessibilityLabel={t('photoStatus')}
-                  accessibilityRole="button"
-                  style={styles.photoViewerButton}
-                  onPress={() => {
-                    void CameraEngine.showPhotoRecovery().catch(() => showTransientError(t('errGeneric')));
-                  }}
-                >
-                  <Text style={styles.photoViewerButtonText}>{t('photoStatus')}</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-          </Modal>
 
           {/* First-launch onboarding (3 pages; no paywall afterwards by design). */}
           <OnboardingView
@@ -1969,35 +1939,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flexShrink: 1,
     textAlign: 'center',
-  },
-  photoViewer: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.96)',
-  },
-  photoViewerImage: {
-    flex: 1,
-    marginTop: 48,
-    marginBottom: 48,
-  },
-  photoViewerActions: {
-    position: 'absolute',
-    bottom: 56,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  photoViewerButton: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    backgroundColor: 'rgba(30, 30, 34, 0.85)',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-  },
-  photoViewerButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
   },
   ultraWideNote: {
     height: 96,

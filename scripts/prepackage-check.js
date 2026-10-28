@@ -88,6 +88,7 @@ step('Swift 括号配平', () => {
     'modules/camera-engine/ios/CameraEngineModule.swift',
     'modules/camera-engine/ios/CameraProfileRenderer.swift',
     'modules/camera-engine/ios/CameraPhotoStore.swift',
+    'modules/camera-engine/ios/CameraPhotoViewer.swift',
     'tools/native-calibration/main.swift',
     'modules/monetization/ios/MonetizationModule.swift',
   ];
@@ -129,8 +130,21 @@ step('expo-modules-autolinking 发现本地模块', () => {
   const r = run('npx', ['expo-modules-autolinking', 'resolve', '--platform', 'ios', '--project-root', '.'], { timeout: 300000 });
   must(r.code === 0, `autolinking resolve 失败:\n${r.stdout}\n${r.stderr}`);
   const output = (r.stdout + r.stderr).replace(/\x1b\[[0-9;]*m/g, '');
+  must(output.includes('CameraOrientationSubscriber'), 'autolinking 未注册预览页方向订阅器');
   must(output.includes('CameraEngineModule'), 'autolinking 未发现 CameraEngineModule——原生模块将无法注册（黑屏回归）');
   must(output.includes('MonetizationModule'), 'autolinking 未发现 MonetizationModule——订阅/试拍原生层将缺失');
+});
+
+// The manifest must permit landscape, while the subscriber keeps other screens portrait.
+step('photo viewer orientation configuration', () => {
+  const r = run('npx', ['expo', 'config', '--type', 'introspect', '--json'], { timeout: 120000 });
+  must(r.code === 0, `Expo config failed: ${r.stderr}`);
+  const config = JSON.parse(r.stdout);
+  const orientations = config._internal.modResults.ios.infoPlist.UISupportedInterfaceOrientations;
+  for (const value of ['Portrait', 'LandscapeLeft', 'LandscapeRight']) {
+    must(orientations.includes(`UIInterfaceOrientation${value}`), `Missing orientation: ${value}`);
+  }
+  must(config.orientation === 'portrait', 'Camera viewfinder must retain portrait configuration');
 });
 
 // 5. Profile JSON 与 LUT 一致性

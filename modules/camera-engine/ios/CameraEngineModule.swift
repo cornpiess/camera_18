@@ -816,6 +816,14 @@ public final class CameraEngineModule: Module {
       CameraPhotoStore.shared.acknowledge(id)
       promise.resolve(nil)
     }
+    AsyncFunction("showLatestPhoto") { (profileNames: [String: String], promise: Promise) in
+      CameraPhotoStore.shared.showLatest(profileNames: profileNames) { result in
+        switch result {
+        case .success(let value): promise.resolve(value)
+        case .failure(let error): self.reject(promise, error)
+        }
+      }
+    }
     AsyncFunction("getLatestPhoto") { (promise: Promise) in
       CameraPhotoStore.shared.latest { promise.resolve($0) }
     }

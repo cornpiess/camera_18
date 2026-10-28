@@ -36,6 +36,7 @@ const en = {
   photoOriginalSafe: 'Original saved. Camera style is waiting to finish.',
   photoLocalSafe: 'Photo kept on this device. Tap Photo status to finish saving.',
   photoUnavailable: 'Full-size photo is unavailable. Your saved photo may still be in Photos.',
+  photoOpen: 'View latest photo',
   photoClose: 'Close', photoStatus: 'Photo status', photosWaiting: 'Waiting to finish', photosFinishing: 'Finishing photos', cameraPreparing: 'Preparing camera…',
   errApertureNotReady: 'Aperture is still settling. Try again.', errPhotoReadDenied: 'Allow photo access to finish the saved photo.',
 
@@ -140,6 +141,7 @@ const zh: Record<keyof typeof en, string> = {
   photoOriginalSafe: '原图已保存，相机风格等待完成。',
   photoLocalSafe: '照片已保留在本机，点击照片状态继续保存。',
   photoUnavailable: '暂时无法读取大图，已保存的照片仍可能在系统相册中。',
+  photoOpen: '查看最近照片',
   photoClose: '关闭', photoStatus: '照片状态', photosWaiting: '等待完成', photosFinishing: '正在完成照片', cameraPreparing: '相机准备中…',
   errApertureNotReady: '光圈尚未稳定，请稍后重试。', errPhotoReadDenied: '请允许照片访问，以完成已保存的照片。',
   selectorTitle: '选择你的相机性格',
