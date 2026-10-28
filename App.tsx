@@ -856,9 +856,13 @@ function CameraAppScreen(): React.JSX.Element {
         // A retained failure has one actionable retry control, but it must never be
         // silent: the first failure announces the retry pill, and a retry that fails
         // AGAIN names the real error (a "tap to retry" that visibly does nothing was
-        // a real user report). Detail is always in the diagnostics log.
+        // a real user report). The native detail (PhotoKit's own error text) rides
+        // along — TestFlight builds have no calibration console, so the banner is
+        // the only production channel that can name the true failure.
+        const failureDetail = String(event?.detail ?? '').trim().slice(0, 120);
+        const mappedFailure = resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.'));
         if (event.retained && event.terminal === true) showTransientError(t('photoRetainedStopped'));
-        else if (!event.retained || event.recovered) showTransientError(resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
+        else if (!event.retained || event.recovered) showTransientError(failureDetail ? `${mappedFailure}\n${failureDetail}` : mappedFailure);
         else showTransientError(t('photoRetrySaving'));
         return;
       }
