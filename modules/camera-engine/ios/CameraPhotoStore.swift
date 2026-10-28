@@ -45,9 +45,10 @@ final class CameraPhotoStore {
     var assetID: String?
     var originalConfirmed: Bool?
     var lastError: String?
+    var attempts: Int? // failed re-attempts that already ran; nil for a first pass
     var attemptID: String? // in-memory callback lease; not persisted
     enum CodingKeys: String, CodingKey {
-      case id, createdAt, proxy, profileData, diagnosticsData, flattened, processingFallback, renderMetadata, assetID, originalConfirmed, lastError
+      case id, createdAt, proxy, profileData, diagnosticsData, flattened, processingFallback, renderMetadata, assetID, originalConfirmed, lastError, attempts
     }
   }
 
@@ -134,6 +135,8 @@ final class CameraPhotoStore {
   private func drain() {
     guard !active, !suspended else { return }
     guard var job = jobs().first(where: { !attempted.contains($0.id) }) else { endExecutionLease(); publishState(); return }
+    // Only re-attempts of an already-failed job count toward the retention limit.
+    if job.lastError != nil { job.attempts = (job.attempts ?? 0) + 1 }
     job.lastError = nil
     try? save(job)
     active = true
@@ -482,6 +485,27 @@ final class CameraPhotoStore {
     facts["recovered"] = callback == nil
     NSLog("[CameraEngine][Photo] id=%@ save=%@ originalSaved=%@ detail=%@", job.id,
       error.rawValue, String(job.originalConfirmed == true), detail)
+    // THREE-STRIKE RETENTION: a job that already failed three re-attempts will keep
+    // failing under the same conditions, and every silent re-failure keeps the
+    // delivery pill stuck ("tap to retry" that can never succeed — including legacy
+    // proxy jobs, which the recovery sheet deliberately refuses to stop). Close it:
+    // persist a terminal outcome, move the journal to Camera18Originals (recovery
+    // sheet keeps export/cleanup; nothing is deleted), clear the pill, settle JS.
+    if (job.attempts ?? 0) >= 3 {
+      do {
+        facts["terminal"] = true
+        // Persist the TERMINAL form: launch replay must settle and ack exactly once.
+        try persistOutcome(facts, id: job.id)
+        let archive = directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
+        try fm.createDirectory(at: archive, withIntermediateDirectories: true)
+        let target = archive.appendingPathComponent(job.id, isDirectory: true)
+        if !fm.fileExists(atPath: target.path) { try fm.moveItem(at: folder(job.id), to: target) }
+        NSLog("[CameraEngine][Photo] id=%@ retained terminally after %@ failed re-attempts", job.id, String(job.attempts ?? 0))
+      } catch {
+        facts["terminal"] = false
+        NSLog("[CameraEngine][Photo] id=%@ terminal retain failed: %@", job.id, error.localizedDescription)
+      }
+    }
     DispatchQueue.main.async {
       if let callback { callback(.success(facts), detail) }
       else { self.eventSink?(facts) }

@@ -853,10 +853,13 @@ function CameraAppScreen(): React.JSX.Element {
         }
         if (settled) acknowledge();
         if (code === 'ERR_PHOTO_PERMISSION_DENIED') setPhotoPermDenied(true);
-        // A retained failure has one actionable retry control. Do not also flash
-        // internal queue/source messages over the viewfinder on every retry.
+        // A retained failure has one actionable retry control, but it must never be
+        // silent: the first failure announces the retry pill, and a retry that fails
+        // AGAIN names the real error (a "tap to retry" that visibly does nothing was
+        // a real user report). Detail is always in the diagnostics log.
         if (event.retained && event.terminal === true) showTransientError(t('photoRetainedStopped'));
-        else if (!event.retained) showTransientError(resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
+        else if (!event.retained || event.recovered) showTransientError(resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
+        else showTransientError(t('photoRetrySaving'));
         return;
       }
       const settled = !trialProfile || !receiptID || commitTrialShotRef.current(trialProfile, receiptID);

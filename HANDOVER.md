@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-28 保存失败提示死循环修复（0f92c45 之后）
+
+用户实机反馈（0f92c45 的 TestFlight build，21:29 构建）：点击拍照仍提示 Save failed · Tap to retry，点 pill 无任何反应。根因分析：上午旧 build（deferred proxy 流程）在设备上遗留了一批带 lastError 的失败任务；每次 startCamera（含每次回前台）`PhotoStore.resume()` 静默重试它们并确定性再失败（proxy 任务的 loadFinal 要 Photos 把 .photoProxy 加工成成片，旧数据无法完成），waiting 永远 >0 → pill 常驻；且 JS 对 retained 非 terminal 失败**刻意零提示**（App.tsx 旧注释），重试再失败完全不可见 →"tap 无效"；恢复面板"保留原图结束等待"又排除 proxy 任务（`!$0.proxy`）→ 无解死循环。
+
+修复（不改保存主链路，只治"无限重试+静默"）：
+
+- **三振终态保留**：Job 新增可选 `attempts`（旧 journal 解码兼容），仅对"上次已失败"的重试计数；同一任务累计 ≥3 次重试失败后 `complete()` 改判终态——先持久化 terminal outcome（重放可结算/ack 一次）、journal 整体移入 Camera18Originals（不删任何数据，照片状态面板仍可导出/清理）、waiting 清零 pill 消失、JS 收 terminal 事件按 captureID 结算试拍并弹"原图保留"横幅。旧遗留任务与新任务同受此约束。
+- **失败必可见**：App.tsx 事件处理改为四分支——terminal 保留→"原图保留"横幅；非 retained→真实错误映射；重试再失败（recovered）→真实错误映射横幅（"tap 无效"直接治愈）；首次 retained 失败→横幅文案即"保存失败·点击重试"指向 pill。
+
+验证：typecheck/lint（仍仅存远端带来的 ApertureBar 1 条既有警告）/capture-check/rendering-check/prepackage（757 modules）全绿；Swift 仅括号配平自查。Swift 编译与 PhotoKit 终态流转待 CI 构建验证；三振后 pill 消失、横幅与导出待真机验收。本轮不触发构建。
+
 ## 2026-10-28 生产拍摄保存修复（优先于历史采集策略）
 
 用户实机反馈拍后仅提示本地保留、无法完成保存，调光圈时常驻Waiting to finish。本轮将新拍摄收敛到直接交付高质量12MP（实际尺寸由设备决定），关闭自动Deferred；仍保持.photo/.quality、HEIF优先、ZSL/Responsive、推荐真实光圈和同一渲染器。先渲染成片再一次创建Photos资产，不再为新照片先保存原图、回读、二次编辑。启动仅申请addOnly；相册中一张成片，干净源/配方/实际render scene与版本保留Camera18Originals。系统相册撤销风格不再适用于新直接风格照片，原图可由缩略图长按入口导出/显式清理。旧代理和已创建资产的日志继续原路恢复，不渲染代理、不重复新建资产。
