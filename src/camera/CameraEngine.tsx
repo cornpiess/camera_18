@@ -30,6 +30,7 @@ export type CameraCapabilities = {
 export type EngineDiagnostics = {
   rendererVersion?: number;
   colorContract?: string;
+  renderTimings?: Record<string, { samples: number; p50Ms: number; p95Ms: number }>;
   normalizers?: string[];
   /** Every .cube name the native side can actually load this build. */
   bundledLuts: string[];

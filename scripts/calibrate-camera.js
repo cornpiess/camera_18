@@ -161,6 +161,7 @@ function candidate(dataset, id, outputDirectory) {
   // A fit is NEVER automatically promoted to measured or copied into production.
   const profile = structuredClone(base);
   const lut = `${id}-candidate`;
+  delete profile.adaptive;
   profile.recipe = { version: `candidate-${report.datasetSHA256.slice(0,12)}`, status: 'candidate', colorContract: CONTRACT, datasetId: dataset.id };
   profile.color = { lut, lutIntensity: 1, temperature: 0, tint: 0, saturation: 1,
     hueBands: Object.fromEntries(['red','orange','yellow','green','cyan','blue','magenta'].map(name => [name, { hue: 0, saturation: 1, luminance: 1 }])) };
@@ -180,13 +181,14 @@ function candidate(dataset, id, outputDirectory) {
 
 function evaluateNative(dataset, native) {
   const split = validateDataset(dataset), all = [...split.train, ...split.validation];
-  check(native?.colorContract === CONTRACT && native.rendererVersion === 4 && native.mode === 'final', 'Need final-mode native renderer v4 output for this color contract');
+  check(native?.mode === 'final' && ((native.colorContract === CONTRACT && [4,5].includes(native.rendererVersion))
+    || (native.colorContract === 'camera18-srgb-ci-v2' && native.rendererVersion === 5)), 'Need compatible final-mode native renderer output for this color contract');
   check(Array.isArray(native.input) && Array.isArray(native.output) && native.input.length === all.length && native.output.length === all.length, 'Native probe counts do not match');
   for (let i = 0; i < all.length; i++) {
     check(rgb(native.input[i]) && native.input[i].every((v, ch) => Math.abs(v-all[i].source[ch]) < 1e-7), 'Native input order/data do not match this dataset');
     check(rgb(native.output[i]), 'Native output is not finite in-gamut RGB');
   }
-  return { datasetId: dataset.id, evidence: dataset.evidence, rendererVersion: native.rendererVersion,
+  return { datasetId: dataset.id, evidence: dataset.evidence, rendererVersion: native.rendererVersion, colorContract: native.colorContract,
     profileId: native.profileId ?? 'not recorded', recipeVersion: native.recipeVersion ?? 'not recorded', lut: native.lut ?? null,
     metric: 'Euclidean OKLab distance ×100; not CIEDE2000',
     train: metrics(split.train, native.output.slice(0,split.train.length)),

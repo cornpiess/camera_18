@@ -25,12 +25,12 @@ const badCopy = structuredClone(doc);
 badCopy.profiles[0].ui.look.zh.description = '';
 assert.equal(validateProfileDocument(badCopy).success, false);
 const legacy = structuredClone(doc);
-for (const p of legacy.profiles) { delete p.ui.look; delete p.color.splitTone; }
+for (const p of legacy.profiles) { delete p.ui.look; delete p.color.splitTone; delete p.adaptive; delete p.texture.detail; delete p.recipe; }
 assert.equal(validateProfileDocument(legacy).success, true, 'existing overrides remain importable');
 
 for (const p of doc.profiles) {
   assert.equal(p.texture.grain.amount, 0, `${p.id}: clean baseline must not add noise`);
-  assert.equal(p.recipe.colorContract, 'camera18-srgb-ci-v1');
+  assert.equal(p.recipe.colorContract, p.passthrough ? 'camera18-srgb-ci-v1' : 'camera18-srgb-ci-v2');
   assert(!['measured', 'candidate'].includes(p.recipe.status), 'no unverified calibration may ship');
 }
 const orig = doc.profiles.find(p => p.passthrough);

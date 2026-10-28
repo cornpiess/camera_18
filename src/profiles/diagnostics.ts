@@ -14,7 +14,9 @@ export function renderedFingerprint(profile: CameraProfile): string {
   const payload = canonical({
     color: profile.color,
     tone: { exposure: profile.tone.exposure, contrast: profile.tone.contrast, blackPoint: profile.tone.blackPoint, curve: profile.tone.curve },
-    texture: { grain: profile.texture.grain, vignette: profile.texture.vignette, deharsh: profile.texture.deharsh ?? 0 },
+    texture: { grain: profile.texture.grain, vignette: profile.texture.vignette, deharsh: profile.texture.deharsh ?? 0, detail: profile.texture.detail ?? null },
+    adaptive: profile.adaptive ?? null,
+    colorContract: profile.recipe?.colorContract ?? 'camera18-srgb-ci-v1',
     passthrough: profile.passthrough === true,
   });
   let hash = 2166136261;

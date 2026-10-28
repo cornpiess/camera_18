@@ -35,7 +35,7 @@
 bash scripts/native-calibration.sh render \
   assets/camera-profiles.json ricoh_negative \
   modules/camera-engine/ios/LUTs source.jpg rendered.png final</pre>
-<p>有独立训练／验收样本后，拟合单个候选 LUT。生成的候选不自动进入生产。</p>
+<p>有独立训练／验收样本后，拟合单个候选 LUT。fit 输出保留 v1 完整RGB约定；不要只改标签当作 v2 的纯颜色cube使用。候选不自动进入生产。</p>
 <pre>node scripts/calibrate-camera.js fit dataset.json ricoh_negative calibration-output/grit-n
 
 bash scripts/native-calibration.sh probes \
@@ -75,7 +75,7 @@ byId('download').onclick=()=>{
     if(!/^[a-z0-9_]+$/.test(profile.id)||!profile.color||!profile.tone||!profile.texture)throw Error('配方缺少必要字段');
     const selected=profiles.find(p=>p.id===profile.id);
     if(JSON.stringify(profile)!==JSON.stringify(selected)){
-      profile.recipe={version:`edited-${new Date().toISOString()}`,status:profile.passthrough===true?'passthrough':'candidate',colorContract:'camera18-srgb-ci-v1'};
+      profile.recipe={version:`edited-${new Date().toISOString()}`,status:profile.passthrough===true?'passthrough':'candidate',colorContract:profile.recipe?.colorContract??'camera18-srgb-ci-v1'};
     }
     const url=URL.createObjectURL(new Blob([JSON.stringify(profile,null,2)+'\n'],{type:'application/json'}));
     const link=document.createElement('a');link.href=url;link.download=profile.id+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);

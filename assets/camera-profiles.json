@@ -7,9 +7,9 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.04,
-        "contrast": 1.04,
-        "blackPoint": 0.008,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
@@ -17,15 +17,15 @@
           ],
           [
             0.25,
-            0.27
+            0.238078
           ],
           [
             0.5,
-            0.515
+            0.532355
           ],
           [
             0.75,
-            0.79
+            0.864897
           ],
           [
             1,
@@ -41,22 +41,22 @@
           "red": {
             "hue": -2,
             "saturation": 1.08,
-            "luminance": 1.01
+            "luminance": 1
           },
           "orange": {
             "hue": -1,
             "saturation": 1.01,
-            "luminance": 1.02
+            "luminance": 1
           },
           "yellow": {
             "hue": -4,
             "saturation": 1.03,
-            "luminance": 1.02
+            "luminance": 1
           },
           "green": {
             "hue": -12,
             "saturation": 1.04,
-            "luminance": 0.99
+            "luminance": 1
           },
           "cyan": {
             "hue": -4,
@@ -66,7 +66,7 @@
           "blue": {
             "hue": -4,
             "saturation": 1.05,
-            "luminance": 0.98
+            "luminance": 1
           },
           "magenta": {
             "hue": 0,
@@ -98,7 +98,11 @@
           "amount": 0.1,
           "radius": 0.75
         },
-        "deharsh": 0.025
+        "deharsh": 0.025,
+        "detail": {
+          "edgeSoftness": 0.12,
+          "radius": 0.6
+        }
       },
       "id": "ricoh_positive",
       "name": "GRIT P",
@@ -129,9 +133,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.35,
+        "shadowChromaProtection": 0.1,
+        "skinProtection": 0.12
       }
     },
     {
@@ -140,25 +149,25 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.03,
-        "contrast": 1.01,
-        "blackPoint": 0.004,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
-            0.035
+            0.039419
           ],
           [
             0.25,
-            0.29
+            0.253152
           ],
           [
             0.5,
-            0.52
+            0.506266
           ],
           [
             0.75,
-            0.775
+            0.812856
           ],
           [
             1,
@@ -174,32 +183,32 @@
           "red": {
             "hue": 7,
             "saturation": 0.93,
-            "luminance": 1.02
+            "luminance": 1
           },
           "orange": {
             "hue": 1,
             "saturation": 0.98,
-            "luminance": 1.035
+            "luminance": 1
           },
           "yellow": {
             "hue": -6,
             "saturation": 0.91,
-            "luminance": 1.02
+            "luminance": 1
           },
           "green": {
             "hue": 15,
             "saturation": 0.86,
-            "luminance": 0.92
+            "luminance": 1
           },
           "cyan": {
             "hue": 4,
             "saturation": 0.88,
-            "luminance": 0.98
+            "luminance": 1
           },
           "blue": {
             "hue": -9,
             "saturation": 0.77,
-            "luminance": 1.02
+            "luminance": 1
           },
           "magenta": {
             "hue": 3,
@@ -231,7 +240,11 @@
           "amount": 0.075,
           "radius": 0.75
         },
-        "deharsh": 0.025
+        "deharsh": 0.025,
+        "detail": {
+          "edgeSoftness": 0.18,
+          "radius": 0.6
+        }
       },
       "id": "ricoh_negative",
       "name": "GRIT N",
@@ -262,9 +275,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.5,
+        "shadowChromaProtection": 0.16,
+        "skinProtection": 0.14
       }
     },
     {
@@ -273,25 +291,25 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.02,
-        "contrast": 0.98,
-        "blackPoint": 0.003,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
-            0.018
+            0.022645
           ],
           [
             0.25,
-            0.265
+            0.295085
           ],
           [
             0.5,
-            0.5
+            0.544651
           ],
           [
             0.75,
-            0.76
+            0.812727
           ],
           [
             1,
@@ -307,17 +325,17 @@
           "red": {
             "hue": 2,
             "saturation": 0.96,
-            "luminance": 1.02
+            "luminance": 1
           },
           "orange": {
             "hue": -2,
             "saturation": 1,
-            "luminance": 1.025
+            "luminance": 1
           },
           "yellow": {
             "hue": -7,
             "saturation": 0.89,
-            "luminance": 1.02
+            "luminance": 1
           },
           "green": {
             "hue": -3,
@@ -337,7 +355,7 @@
           "magenta": {
             "hue": -1,
             "saturation": 1,
-            "luminance": 1.01
+            "luminance": 1
           }
         },
         "lut": "canon-g7x2",
@@ -364,7 +382,11 @@
           "amount": 0.045,
           "radius": 0.75
         },
-        "deharsh": 0.055
+        "deharsh": 0.055,
+        "detail": {
+          "edgeSoftness": 0.2,
+          "radius": 0.6
+        }
       },
       "id": "canon_portrait",
       "name": "SKIN C",
@@ -395,9 +417,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.55,
+        "shadowChromaProtection": 0.12,
+        "skinProtection": 0.22
       }
     },
     {
@@ -406,9 +433,9 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.02,
-        "contrast": 1.035,
-        "blackPoint": 0.008,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
@@ -416,19 +443,19 @@
           ],
           [
             0.25,
-            0.275
+            0.23203
           ],
           [
             0.5,
-            0.51
+            0.490952
           ],
           [
             0.75,
-            0.775
+            0.787475
           ],
           [
             1,
-            0.98
+            0.979518
           ]
         ]
       },
@@ -440,12 +467,12 @@
           "red": {
             "hue": -2,
             "saturation": 0.94,
-            "luminance": 1.01
+            "luminance": 1
           },
           "orange": {
             "hue": -1,
             "saturation": 1.02,
-            "luminance": 1.04
+            "luminance": 1
           },
           "yellow": {
             "hue": -7,
@@ -455,17 +482,17 @@
           "green": {
             "hue": -8,
             "saturation": 0.79,
-            "luminance": 0.97
+            "luminance": 1
           },
           "cyan": {
             "hue": -6,
             "saturation": 0.92,
-            "luminance": 0.98
+            "luminance": 1
           },
           "blue": {
             "hue": -10,
             "saturation": 0.88,
-            "luminance": 0.98
+            "luminance": 1
           },
           "magenta": {
             "hue": 0,
@@ -497,7 +524,11 @@
           "amount": 0.095,
           "radius": 0.75
         },
-        "deharsh": 0.025
+        "deharsh": 0.025,
+        "detail": {
+          "edgeSoftness": 0.14,
+          "radius": 0.6
+        }
       },
       "id": "fuji_classic_chrome",
       "name": "CC",
@@ -528,9 +559,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.4,
+        "shadowChromaProtection": 0.12,
+        "skinProtection": 0.14
       }
     },
     {
@@ -539,9 +575,9 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.04,
-        "contrast": 1.035,
-        "blackPoint": 0.01,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
@@ -549,15 +585,15 @@
           ],
           [
             0.25,
-            0.28
+            0.222271
           ],
           [
             0.5,
-            0.525
+            0.518145
           ],
           [
             0.75,
-            0.815
+            0.88745
           ],
           [
             1,
@@ -578,7 +614,7 @@
           "orange": {
             "hue": -2,
             "saturation": 0.98,
-            "luminance": 1.02
+            "luminance": 1
           },
           "yellow": {
             "hue": -8,
@@ -588,17 +624,17 @@
           "green": {
             "hue": 10,
             "saturation": 1.02,
-            "luminance": 0.92
+            "luminance": 1
           },
           "cyan": {
             "hue": 5,
             "saturation": 0.87,
-            "luminance": 0.98
+            "luminance": 1
           },
           "blue": {
             "hue": -3,
             "saturation": 0.85,
-            "luminance": 0.99
+            "luminance": 1
           },
           "magenta": {
             "hue": 3,
@@ -630,7 +666,11 @@
           "amount": 0.13,
           "radius": 0.75
         },
-        "deharsh": 0.025
+        "deharsh": 0.025,
+        "detail": {
+          "edgeSoftness": 0.16,
+          "radius": 0.6
+        }
       },
       "id": "fuji_classic_negative",
       "name": "NC",
@@ -661,9 +701,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.4,
+        "shadowChromaProtection": 0.16,
+        "skinProtection": 0.12
       }
     },
     {
@@ -672,9 +717,9 @@
         "starZone": 4
       },
       "tone": {
-        "exposure": 0.035,
-        "contrast": 1.035,
-        "blackPoint": 0.01,
+        "exposure": 0,
+        "contrast": 1,
+        "blackPoint": 0,
         "curve": [
           [
             0,
@@ -682,15 +727,15 @@
           ],
           [
             0.25,
-            0.265
+            0.232372
           ],
           [
             0.5,
-            0.525
+            0.544349
           ],
           [
             0.75,
-            0.79
+            0.85018
           ],
           [
             1,
@@ -706,12 +751,12 @@
           "red": {
             "hue": -4,
             "saturation": 1.07,
-            "luminance": 0.99
+            "luminance": 1
           },
           "orange": {
             "hue": -1,
             "saturation": 1,
-            "luminance": 1.025
+            "luminance": 1
           },
           "yellow": {
             "hue": -4,
@@ -721,17 +766,17 @@
           "green": {
             "hue": -4,
             "saturation": 0.87,
-            "luminance": 0.97
+            "luminance": 1
           },
           "cyan": {
             "hue": -3,
             "saturation": 0.9,
-            "luminance": 0.98
+            "luminance": 1
           },
           "blue": {
             "hue": -6,
             "saturation": 0.95,
-            "luminance": 0.98
+            "luminance": 1
           },
           "magenta": {
             "hue": 0,
@@ -763,7 +808,11 @@
           "amount": 0.12,
           "radius": 0.75
         },
-        "deharsh": 0.025
+        "deharsh": 0.025,
+        "detail": {
+          "edgeSoftness": 0.1,
+          "radius": 0.6
+        }
       },
       "id": "leica_m9",
       "name": "M-RF",
@@ -794,9 +843,14 @@
         "note": "Clean baseline: no added grain. Creative approximation, not measured camera matching."
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.35,
+        "shadowChromaProtection": 0.1,
+        "skinProtection": 0.12
       }
     },
     {
@@ -816,16 +870,16 @@
             0
           ],
           [
-            0.18,
-            0.175
+            0.25,
+            0.238076
           ],
           [
             0.5,
-            0.505
+            0.506098
           ],
           [
-            0.78,
-            0.795
+            0.75,
+            0.769762
           ],
           [
             1,
@@ -846,7 +900,7 @@
           "orange": {
             "hue": -1,
             "saturation": 0.99,
-            "luminance": 1.01
+            "luminance": 1
           },
           "yellow": {
             "hue": -0.5,
@@ -886,7 +940,11 @@
           "amount": 0,
           "radius": 0.85
         },
-        "deharsh": 0.04
+        "deharsh": 0.04,
+        "detail": {
+          "edgeSoftness": 0.18,
+          "radius": 0.6
+        }
       },
       "ui": {
         "shortName": "VMF",
@@ -909,9 +967,14 @@
         }
       },
       "recipe": {
-        "version": "2026-10-27.1",
+        "version": "2026-10-28-unified-v5",
         "status": "approximation",
-        "colorContract": "camera18-srgb-ci-v1"
+        "colorContract": "camera18-srgb-ci-v2"
+      },
+      "adaptive": {
+        "highlightProtection": 0.55,
+        "shadowChromaProtection": 0.1,
+        "skinProtection": 0.18
       }
     },
     {
