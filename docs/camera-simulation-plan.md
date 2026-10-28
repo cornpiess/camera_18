@@ -137,3 +137,7 @@ LUT保存颜色响应，影调由统一影调阶段控制。新候选必须去�
 - [RAW 9与Core Image](https://developer.apple.com/videos/play/wwdc2026/305/)：按支持启用的RAW处理与资源要求。
 - [Vision主体蒙版](https://developer.apple.com/documentation/vision/applying-matte-effects-to-people-in-images-and-video)：局部颜色与明暗处理的输入。
 - [HDR编辑与增益图](https://developer.apple.com/videos/play/wwdc2024/10177/)：编辑后输出的动态范围一致性。
+
+## 2026-10-28 生产保存策略收敛
+
+用户实机报保存失败后，新拍摄改为直接质量12MP底片、本地同源渲染、一次Photos入库；干净源和实际配方/scene/renderer版本保留本地，系统相册不能撤销新照片风格。自动24MP Deferred暂停，旧代理保留恢复能力。推荐光圈与渲染架构不变；详见高画质采集架构最新修复节。正常流程无常驻处理状态，真实失败才提供重试。

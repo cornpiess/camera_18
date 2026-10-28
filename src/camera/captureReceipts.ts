@@ -13,3 +13,12 @@ export function settleCaptureReservation<T extends { captureID: string }>(pendin
 export function canRequestCapture(state: { ready: boolean }, opticsPending: boolean, exposing: boolean): boolean {
   return state.ready && !opticsPending && !exposing;
 }
+
+/** The viewfinder is quiet during ordinary work. Only actual failures need an action. */
+export function captureRecoveryAction(
+  state: { reason: string }, delivery: { waiting: number },
+): 'camera' | 'aperture' | 'photos' | null {
+  if (state.reason === 'unavailable') return 'camera';
+  if (state.reason === 'aperture') return 'aperture';
+  return delivery.waiting > 0 ? 'photos' : null;
+}

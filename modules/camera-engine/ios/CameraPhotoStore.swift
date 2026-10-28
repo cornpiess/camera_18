@@ -8,7 +8,9 @@ import UniformTypeIdentifiers
 // API contracts: Apple WWDC23/10105 (proxy -> PhotoKit -> final),
 // WWDC26/304 (.quality + 24MP), PHContentEditingOutput (same-asset recipe).
 
-/// One durable job and one Photos asset per exposure. A proxy is NEVER rendered.
+/// One durable job and one Photos asset per exposure. Direct captures are styled
+/// locally before asset creation; Photos read/edit access never gates a new photo.
+/// Legacy proxy journals are still finalized, and a proxy is NEVER rendered.
 /// Queue ownership includes every callback; no semaphore blocks PhotoKit or the UI.
 final class CameraPhotoStore {
   static let shared = CameraPhotoStore()
@@ -38,12 +40,14 @@ final class CameraPhotoStore {
     let profileData: Data
     let diagnosticsData: Data
     var flattened: Bool = false
+    var processingFallback: Bool?
+    var renderMetadata: Data?
     var assetID: String?
     var originalConfirmed: Bool?
     var lastError: String?
     var attemptID: String? // in-memory callback lease; not persisted
     enum CodingKeys: String, CodingKey {
-      case id, createdAt, proxy, profileData, diagnosticsData, flattened, assetID, originalConfirmed, lastError
+      case id, createdAt, proxy, profileData, diagnosticsData, flattened, processingFallback, renderMetadata, assetID, originalConfirmed, lastError
     }
   }
 
@@ -60,10 +64,26 @@ final class CameraPhotoStore {
     } else { completion() }
   }
 
+  /// New production photos need add access only. Read access is requested by
+  /// explicit Photos operations, not imposed on the camera's capture path.
+  static func authorizeSaving(completion: @escaping () -> Void) {
+    if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+      PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in completion() }
+    } else { completion() }
+  }
+
   /// One recovery pass at launch / foreground, never a polling or retry loop.
   func resume() {
     ensureExecutionLease()
-    queue.async { self.suspended = false; self.replayOutcomes(); self.attempted.removeAll(); self.updateCapacity(); self.drain() }
+    queue.async {
+      self.suspended = false
+      self.replayOutcomes()
+      // Repeated lifecycle notifications / retry taps must not reset the pass
+      // while an existing transaction still owns it.
+      if !self.active { self.attempted.removeAll() }
+      self.updateCapacity()
+      self.drain()
+    }
   }
 
   private func folder(_ id: String) -> URL { directory.appendingPathComponent(id, isDirectory: true) }
@@ -129,16 +149,17 @@ final class CameraPhotoStore {
       self.complete(latest, error: .processingFailed, detail: "Photo processing paused; the source is retained for the next resume.")
     }
     if job.assetID != nil { loadFinal(job); return }
-    // Both paths create the original first, so a failed style edit cannot lose it.
+    // New direct captures render locally, then create one complete Photos asset.
+    // Only legacy proxy / already-created journals need Photos finalization.
     let addStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
     if !Self.canReadOwnPhotos && addStatus == .notDetermined {
-      PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in self.queue.async { self.createOriginal(job) } }
-    } else { createOriginal(job) }
+      PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in self.queue.async { self.createAsset(job) } }
+    } else { createAsset(job) }
   }
 
   private func isActive(_ job: Job) -> Bool { active && activeAttempt == job.attemptID }
 
-  private func createOriginal(_ originalJob: Job) {
+  private func createAsset(_ originalJob: Job) {
     guard isActive(originalJob) else { return }
     let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
     guard Self.canReadOwnPhotos || status == .authorized || status == .limited else {
@@ -150,24 +171,33 @@ final class CameraPhotoStore {
       return
     }
     var job = originalJob
-    if !Self.canReadOwnPhotos, !job.proxy, profile(job)["passthrough"] as? Bool != true {
+    if !job.proxy, profile(job)["passthrough"] as? Bool != true {
       do {
         let destination = folder(job.id).appendingPathComponent("rendered.data")
-        do { try render(job, source: sourceURL(job), destination: destination, type: "public.heic") }
-        catch { try render(job, source: sourceURL(job), destination: destination, type: "public.jpeg") }
+        let scene: CameraSceneContext
+        do { scene = try render(job, source: sourceURL(job), destination: destination, type: "public.heic") }
+        catch { scene = try render(job, source: sourceURL(job), destination: destination, type: "public.jpeg") }
+        job.renderMetadata = try JSONSerialization.data(withJSONObject: [
+          "rendererVersion": CameraDNARenderer.rendererVersion, "scene": scene.dictionary,
+          "colorContract": (profile(job)["recipe"] as? [String: Any])?["colorContract"] ?? CameraDNARenderer.legacyColorContract,
+        ])
         job.flattened = true
+        job.processingFallback = false
         try save(job)
-      } catch { complete(job, error: .processingFailed, detail: error.localizedDescription); return }
+      } catch {
+        // Taking a real photo must not depend on a style filter/encoder succeeding.
+        // Preserve Apple's complete source and explicitly report the fallback.
+        job.flattened = false
+        job.processingFallback = true
+        do { try save(job) }
+        catch { complete(job, error: .saveFailed, detail: error.localizedDescription); return }
+        NSLog("[CameraEngine][Photo] id=%@ style failed; saving Apple source: %@", job.id, error.localizedDescription)
+      }
     }
     var journalError: Error?
     PHPhotoLibrary.shared().performChanges({
       let request = PHAssetCreationRequest.forAsset()
-      job.assetID = request.placeholderForCreatedAsset?.localIdentifier
-      // Persist the identifier BEFORE submitting the transaction, so restart never
-      // blindly creates a second asset after a successful but unacknowledged save.
       do {
-        guard job.assetID != nil else { throw CameraEngineError.saveFailed }
-        try self.save(job)
         let options = PHAssetResourceCreationOptions()
         if !job.proxy {
           let resource = job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job)
@@ -177,13 +207,24 @@ final class CameraPhotoStore {
           }
         }
         if job.proxy {
-          if #available(iOS 17.0, *) { request.addResource(with: .photoProxy, fileURL: self.sourceURL(job), options: options) }
+          // Match Apple's deferred-photo contract: pass the unmodified proxy bytes.
+          // The private journal's .data suffix must not determine a Photos UTI.
+          if #available(iOS 17.0, *) {
+            request.addResource(with: .photoProxy, data: try Data(contentsOf: self.sourceURL(job)), options: nil)
+          } else { throw CameraEngineError.processingFailed }
         } else { request.addResource(with: .photo, fileURL: job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job), options: options) }
+        // Register the resource BEFORE asking for its placeholder. An empty asset
+        // request is not a valid new image and may not provide a placeholder.
+        job.assetID = request.placeholderForCreatedAsset?.localIdentifier
+        guard job.assetID != nil else { throw CameraEngineError.saveFailed }
+        // Persist before the change block completes; ambiguous completion never
+        // justifies creating a duplicate asset on the next launch.
+        try self.save(job)
       } catch { journalError = error }
     }) { success, error in
       self.queue.async {
         guard self.isActive(job) else { return }
-        guard success, journalError == nil else {
+        guard success else {
           // A confirmed transaction failure is safe to retry on the next resume.
           job.assetID = nil
           try? self.save(job)
@@ -192,9 +233,13 @@ final class CameraPhotoStore {
         }
         job.originalConfirmed = true
         try? self.save(job)
+        if let journalError {
+          self.complete(job, error: .saveFailed, detail: journalError.localizedDescription)
+          return
+        }
         if job.flattened { self.deliver(job, url: self.folder(job.id).appendingPathComponent("rendered.data"), fallback: false) }
-        else if Self.canReadOwnPhotos { self.loadFinal(job) }
-        else { self.deliver(job, url: self.sourceURL(job), fallback: false) }
+        else if !job.proxy { self.deliver(job, url: self.sourceURL(job), fallback: job.processingFallback == true) }
+        else { self.loadFinal(job) }
       }
     }
   }
@@ -206,7 +251,22 @@ final class CameraPhotoStore {
   private func loadFinal(_ job: Job) {
     guard isActive(job) else { return }
     if job.flattened {
+      // A placeholder journaled before process death is not proof of a committed
+      // transaction. Confirm it when possible; never report an ambiguous save as
+      // successful, or create a second visible asset just to resolve ambiguity.
+      if job.originalConfirmed != true {
+        guard Self.canReadOwnPhotos, let id = job.assetID,
+              PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject != nil else {
+          complete(job, error: .saveFailed, detail: "The previous save could not be confirmed; the finished photo is retained.")
+          return
+        }
+      }
       deliver(job, url: folder(job.id).appendingPathComponent("rendered.data"), fallback: false)
+      return
+    }
+    if !job.proxy, job.originalConfirmed == true,
+       profile(job)["passthrough"] as? Bool == true || job.processingFallback == true {
+      deliver(job, url: sourceURL(job), fallback: job.processingFallback == true)
       return
     }
     guard Self.canReadOwnPhotos, let id = job.assetID,
@@ -262,7 +322,9 @@ final class CameraPhotoStore {
           }
           let rendered = self.folder(job.id).appendingPathComponent("final.data")
           let renderScene = try self.render(job, source: url, destination: rendered, type: type.identifier)
-          try self.fm.copyItem(at: rendered, to: destination)
+          // PhotoKit may already own a file at its output URL. Atomic replacement
+          // also makes recovery safe; copyItem rejects an existing destination.
+          try Data(contentsOf: rendered).write(to: destination, options: .atomic)
           output.adjustmentData = PHAdjustmentData(formatIdentifier: Self.adjustmentID, formatVersion: "1",
             data: try JSONSerialization.data(withJSONObject: ["captureID": job.id, "profile": profile,
               "rendererVersion": CameraDNARenderer.rendererVersion, "scene": renderScene.dictionary,
@@ -379,14 +441,16 @@ final class CameraPhotoStore {
         String(describing: facts["actualHeight"] ?? 0))
       do {
         if job.flattened {
-          // Read-denied fallback still preserves the clean original and recipe locally.
-          // It cannot attach an original resource to an existing Photos asset without
-          // read access. The fallback is a single styled asset, not two visible photos.
+          // Every direct styled capture preserves its clean source and recipe here.
+          // Photos receives one finished asset, with no readback or edit transaction.
           let archive = directory.deletingLastPathComponent().appendingPathComponent("Camera18Originals", isDirectory: true)
           try fm.createDirectory(at: archive, withIntermediateDirectories: true)
           let target = archive.appendingPathComponent(job.id, isDirectory: true)
           if !fm.fileExists(atPath: target.path) { try fm.moveItem(at: folder(job.id), to: target) }
           else { try fm.removeItem(at: folder(job.id)) }
+          // Only the clean source and recipe need long-term retention. The styled
+          // result is already in Photos / latest; do not archive a second copy.
+          for name in ["rendered.data", "final.data"] { try? fm.removeItem(at: target.appendingPathComponent(name)) }
         } else { try fm.removeItem(at: folder(job.id)) }
       } catch { NSLog("[CameraEngine][Photo] saved; retained journal after cleanup failure: %@", error.localizedDescription) }
       let callback = callbacks.removeValue(forKey: job.id)
@@ -416,6 +480,8 @@ final class CameraPhotoStore {
     facts["errorCode"] = error.rawValue
     facts["detail"] = detail
     facts["recovered"] = callback == nil
+    NSLog("[CameraEngine][Photo] id=%@ save=%@ originalSaved=%@ detail=%@", job.id,
+      error.rawValue, String(job.originalConfirmed == true), detail)
     DispatchQueue.main.async {
       if let callback { callback(.success(facts), detail) }
       else { self.eventSink?(facts) }

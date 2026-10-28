@@ -33,11 +33,11 @@ export const appLang: Lang = detectLang();
 
 const en = {
   photoRetainedStopped: 'Originals kept on this device. Styling stopped.',
-  photoOriginalSafe: 'Original saved. Camera style is waiting to finish.',
-  photoLocalSafe: 'Photo kept on this device. Tap Photo status to finish saving.',
+  photoRetrySaving: 'Save failed · Tap to retry',
+  photoManageOriginals: 'Manage original photos',
   photoUnavailable: 'Full-size photo is unavailable. Your saved photo may still be in Photos.',
   photoOpen: 'View latest photo',
-  photoClose: 'Close', photoStatus: 'Photo status', photosWaiting: 'Waiting to finish', photosFinishing: 'Finishing photos', cameraPreparing: 'Preparing camera…',
+  photoClose: 'Close',
   errApertureNotReady: 'Aperture is still settling. Try again.', errPhotoReadDenied: 'Allow photo access to finish the saved photo.',
 
   selectorTitle: 'Choose your look',
@@ -138,11 +138,11 @@ const en = {
 
 const zh: Record<keyof typeof en, string> = {
   photoRetainedStopped: '原图保留在本机，已结束风格处理。',
-  photoOriginalSafe: '原图已保存，相机风格等待完成。',
-  photoLocalSafe: '照片已保留在本机，点击照片状态继续保存。',
+  photoRetrySaving: '保存失败 · 点击重试',
+  photoManageOriginals: '管理原始照片',
   photoUnavailable: '暂时无法读取大图，已保存的照片仍可能在系统相册中。',
   photoOpen: '查看最近照片',
-  photoClose: '关闭', photoStatus: '照片状态', photosWaiting: '等待完成', photosFinishing: '正在完成照片', cameraPreparing: '相机准备中…',
+  photoClose: '关闭',
   errApertureNotReady: '光圈尚未稳定，请稍后重试。', errPhotoReadDenied: '请允许照片访问，以完成已保存的照片。',
   selectorTitle: '选择你的相机性格',
   selectorSubtitle: '八种影像性格，一按即得。',

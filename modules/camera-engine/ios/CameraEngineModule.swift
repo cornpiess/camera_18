@@ -812,6 +812,10 @@ public final class CameraEngineModule: Module {
     AsyncFunction("showPhotoRecovery") { (promise: Promise) in
       CameraPhotoStore.shared.showRecovery { promise.resolve(nil) }
     }
+    AsyncFunction("retryPhotoSaving") { (promise: Promise) in
+      CameraPhotoStore.shared.resume()
+      promise.resolve(nil)
+    }
     AsyncFunction("ackPhotoOutcome") { (id: String, promise: Promise) in
       CameraPhotoStore.shared.acknowledge(id)
       promise.resolve(nil)
@@ -1256,7 +1260,7 @@ public final class CameraEngineView: ExpoView {
     startMotionOrientationTracking()
     requestCamera { granted in
       guard granted else { completion(.failure(.permissionDenied)); return }
-      CameraPhotoStore.authorize {
+      CameraPhotoStore.authorizeSaving {
         self.sessionQueue.async {
         do {
           if !self.configured {
@@ -1589,7 +1593,10 @@ public final class CameraEngineView: ExpoView {
   private func configurePhotoQuality() throws {
     output.maxPhotoQualityPrioritization = .quality
     if #available(iOS 17.0, *) {
-      output.isAutoDeferredPhotoDeliveryEnabled = output.isAutoDeferredPhotoDeliverySupported && CameraPhotoStore.canReadOwnPhotos
+      // Production capture must deliver a complete source without a second Photos
+      // round trip. Keep quality fusion; defer 24MP until device acceptance passes.
+      // Old proxy journals remain recoverable in CameraPhotoStore.
+      output.isAutoDeferredPhotoDeliveryEnabled = false
       output.isFastCapturePrioritizationEnabled = false
       output.isZeroShutterLagEnabled = output.isZeroShutterLagSupported
       output.isResponsiveCaptureEnabled = output.isResponsiveCaptureSupported
@@ -1879,9 +1886,18 @@ public final class CameraEngineView: ExpoView {
       controller.setAperture(Float(fStop), on: device) { result in
         self.sessionQueue.async {
           if generation == self.apertureGeneration {
-            if case .success = result { self.apertureMode = controller.mode; self.apertureFailure = false }
-            else { self.apertureFailure = true }
-            Self.apertureEventSink?(controller.currentAperture(device))
+            let actual = controller.currentAperture(device)
+            let valid = actual.isFinite && actual > 0
+            if case .success = result { self.apertureMode = controller.mode }
+            // A rejected target is not a broken camera: restore the real hardware
+            // stop and let the caller report the rejected adjustment. Otherwise a
+            // single unsupported/failed request permanently disables the shutter,
+            // even after JS reverts the ring or demotes the lens to fixed aperture.
+            self.apertureFailure = !valid
+            if valid {
+              self.apertureTarget = actual
+              Self.apertureEventSink?(actual)
+            }
           }
           finish(result)
         }

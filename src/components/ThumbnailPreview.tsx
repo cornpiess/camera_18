@@ -13,12 +13,15 @@ export interface ThumbnailPreviewProps {
   size?: number;
   /** When provided and a photo exists, the thumbnail opens the latest photo viewer. */
   onPress?: () => void;
+  /** Original storage / recovery tools stay behind an explicit long press. */
+  onLongPress?: () => void;
 }
 
 export const ThumbnailPreview: React.FC<ThumbnailPreviewProps> = ({
   uri,
   size = 48,
   onPress,
+  onLongPress,
 }: ThumbnailPreviewProps) => {
   const bounceAnim = useRef(new Animated.Value(1)).current;
 
@@ -80,6 +83,9 @@ export const ThumbnailPreview: React.FC<ThumbnailPreviewProps> = ({
           accessibilityLabel={t('photoOpen')}
           activeOpacity={0.75}
           onPress={onPress}
+          onLongPress={onLongPress}
+          accessibilityActions={onLongPress ? [{ name: 'manageOriginals', label: t('photoManageOriginals') }] : undefined}
+          onAccessibilityAction={(event) => { if (event.nativeEvent.actionName === 'manageOriginals') onLongPress?.(); }}
         >
           {image}
         </TouchableOpacity>

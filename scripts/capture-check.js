@@ -38,3 +38,19 @@ for (const ready of [false, true]) for (const optics of [false, true]) for (cons
   assert.equal(canRequestCapture({ ready }, optics, exposing), ready && !optics && !exposing);
 }
 console.log('Retained -> resumed -> duplicate result settlement PASS; shutter readiness matrix PASS.');
+
+const { captureRecoveryAction } = exportsObject;
+// Ordinary exposure, rendering and aperture moves have no status overlay. A
+// previous failed photo alone may offer recovery, but never changes shutter gates.
+for (const reason of ['ready', 'optics', 'exposing', 'processing']) {
+  for (const processing of [0, 1, 8]) for (const paused of [false, true]) {
+    assert.equal(captureRecoveryAction({ reason }, { waiting: 0, processing, paused }), null);
+    assert.equal(captureRecoveryAction({ reason }, { waiting: 2, processing, paused }), 'photos');
+  }
+}
+assert.equal(captureRecoveryAction({ reason: 'unavailable' }, { waiting: 0 }), 'camera');
+assert.equal(captureRecoveryAction({ reason: 'aperture' }, { waiting: 0 }), 'aperture');
+assert.equal(captureRecoveryAction({ reason: 'aperture' }, { waiting: 3 }), 'aperture');
+assert.equal(captureRecoveryAction({ reason: 'ready' }, { waiting: 0 }), null); // Retry succeeded.
+assert.equal(canRequestCapture({ ready: true }, false, false), true); // Old failures do not gate new photos.
+console.log('Quiet normal capture/aperture UI; actionable failure and recovery states PASS.');

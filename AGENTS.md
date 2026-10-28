@@ -159,6 +159,7 @@ node -e "const Y=require('yaml'),fs=require('fs');for(const f of ['.github/workf
 
 **相机模拟架构（2026-10-27 用户批准：苹果高质量底片 + 统一相机风格）**：
 - 本节取代历史的物理镜头强制路由、balanced、关闭 Deferred 的约定。
+- **2026-10-28生产修复优先**：用户实机反馈保存失败后，新拍摄关闭自动Deferred，直接高质量12MP（.photo/.quality、HEIF优先），先本地渲染再一次创建Photos资产。原图/配方/实际scene与版本留本地，新直接风格照片不支持Photos撤销；旧代理/资产继续恢复。先addResource再取placeholder、持久化ID；事务成功不能因日志错误清空ID；风格失败保存Apple原图并明确fallback。正常光圈/渲染无常驻队列字，真失败才给重试；光圈失败但有效硬件回读应恢复真实值与可拍，不能永久锁快门。以下24MP/同资产编辑描述仅适用历史任务。
 - 默认虚拟后置多摄自动路由；焦段表达构图意图。物理镜头用于单摄回退及相机推荐光圈或用户真实主摄光圈控制；换 input 保留 crossfade、禁拍窗、2.5s watchdog 和统一重建。
 - `.photo` + 输出/单次 `.quality`；HEIF 源优先。支持延迟交付且有照片读取权限时请求24MP；否则高质量12MP（不默认追求最大像素）。实际分辨率由系统决定。
 - 开启支持的 Deferred / ZSL / Responsive；Fast Capture Prioritization 关闭。资源预热与内存上限保障响应，不为连拍自动降质。

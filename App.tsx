@@ -1,7 +1,7 @@
 // diagLog must be imported first: it self-installs on import so that any module-evaluation
 // error from the imports below (native module resolution included) is already captured.
 import { recordDiag } from './src/utils/diagLog';
-import { settleCaptureReservation, canRequestCapture } from './src/camera/captureReceipts';
+import { settleCaptureReservation, canRequestCapture, captureRecoveryAction } from './src/camera/captureReceipts';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
@@ -387,6 +387,14 @@ function CameraAppScreen(): React.JSX.Element {
   // control — the chosen f-number drives capture-time blur/starburst — but the lens has
   // no physical iris, so it is NOT "variable hardware".
   const [apertureVariable, setApertureVariable] = useState<boolean>(false);
+  useEffect(() => {
+    if (!apertureVariable) {
+      // Demotion / lens changes must release the drag lease even when no settle
+      // follows. Native readiness still protects an actual in-flight optical move.
+      apertureSettleSeqRef.current += 1;
+      setOpticsBusy(false);
+    }
+  }, [apertureVariable, setOpticsBusy]);
   // Developer-mode extra: side-view lens cross-section above the tick scale (default off).
   const [apertureSideView, setApertureSideView] = useState<boolean>(false);
   // TESTING BUILDS ONLY (local dev / TestFlight Beta): the test settings gate.
@@ -845,8 +853,10 @@ function CameraAppScreen(): React.JSX.Element {
         }
         if (settled) acknowledge();
         if (code === 'ERR_PHOTO_PERMISSION_DENIED') setPhotoPermDenied(true);
-        showTransientError(event.retained ? t(event.terminal === true ? 'photoRetainedStopped' : event.originalSaved ? 'photoOriginalSafe' : 'photoLocalSafe')
-          : resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
+        // A retained failure has one actionable retry control. Do not also flash
+        // internal queue/source messages over the viewfinder on every retry.
+        if (event.retained && event.terminal === true) showTransientError(t('photoRetainedStopped'));
+        else if (!event.retained) showTransientError(resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
         return;
       }
       const settled = !trialProfile || !receiptID || commitTrialShotRef.current(trialProfile, receiptID);
@@ -956,7 +966,7 @@ function CameraAppScreen(): React.JSX.Element {
   // (confirmed/ref/demote) always runs; the RING's visible value is only written when
   // no newer settle superseded this one AND no finger owns the ring.
   const handleApertureSettle = (aperture: number) => {
-    if (!apertureVariable) return;
+    if (!apertureVariable) { setOpticsBusy(false); return; }
     // apertureRange FIRST: it tracks the live capability (mock-variable overwrites it
     // with the project f/1.48-f/4 range), while capabilitiesRef holds the STARTUP
     // snapshot — on a fixed lens that snapshot is min=max=1.8, which clamped every
@@ -1382,6 +1392,8 @@ function CameraAppScreen(): React.JSX.Element {
     permissionState === 'denied' ||
     (cameraInitError !== null && !isCameraRunning);
 
+  const recoveryAction = captureRecoveryAction(nativeCaptureState, deliveryState);
+
   return (
     <View style={[styles.rootContainer, { backgroundColor: skin.chrome }]}>
       <StatusBar barStyle="light-content" hidden={false} translucent backgroundColor="transparent" />
@@ -1526,22 +1538,20 @@ function CameraAppScreen(): React.JSX.Element {
             </View>
           )}
 
-          {isCameraRunning && !permissionOverlayVisible && (
+          {isCameraRunning && !permissionOverlayVisible && recoveryAction && !(recoveryAction === 'photos' && photoPermDenied) && (
             <View style={{ position: 'absolute', top: 105, alignSelf: 'center', zIndex: 20 }}>
               <TouchableOpacity accessibilityRole="button" onPress={() => {
-                  if (nativeCaptureState.reason === 'unavailable') { void initializeCameraSession(); }
-                  else if (nativeCaptureState.reason === 'aperture' && nativeCaptureState.apertureTarget != null) {
+                  if (recoveryAction === 'camera') { void initializeCameraSession(); }
+                  else if (recoveryAction === 'aperture' && nativeCaptureState.apertureTarget != null) {
                     setOpticsBusy(true, 'retry');
                     void CameraEngine.setAperture(nativeCaptureState.apertureTarget).catch((error: unknown) => showTransientError(resolveErrorMessage(error))).finally(() => setOpticsBusy(false, 'retry'));
-                  } else { void CameraEngine.showPhotoRecovery().catch(() => showTransientError(t('errGeneric'))); }
+                  } else { void CameraEngine.retryPhotoSaving().catch(() => showTransientError(t('errGeneric'))); }
                 }}
+                onLongPress={recoveryAction === 'photos' ? () => { void CameraEngine.showPhotoRecovery().catch(() => {}); } : undefined}
                 style={{ backgroundColor: '#111C', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 8 }}>
                 <Text style={{ color: '#FFF', fontSize: 12 }}>
-                  {nativeCaptureState.reason === 'unavailable' ? t('retryCamera')
-                    : nativeCaptureState.reason === 'aperture' ? t('errApertureNotReady')
-                    : deliveryState.waiting > 0 || deliveryState.paused ? `${t('photosWaiting')} ${deliveryState.waiting || deliveryState.processing}`
-                    : deliveryState.processing > 0 ? `${t('photosFinishing')} ${deliveryState.processing}`
-                    : opticsPending || nativeCaptureState.reason === 'optics' ? t('cameraPreparing') : t('photoStatus')}
+                  {recoveryAction === 'camera' ? t('retryCamera')
+                    : recoveryAction === 'aperture' ? t('errApertureNotReady') : t('photoRetrySaving')}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1642,6 +1652,7 @@ function CameraAppScreen(): React.JSX.Element {
                   {latestThumbnail ? (
                     <ThumbnailPreview
                       uri={latestThumbnail}
+                      onLongPress={() => { void CameraEngine.showPhotoRecovery().catch(() => showTransientError(t('errGeneric'))); }}
                       onPress={() => {
                         if (photoViewerOpenRef.current) return;
                         photoViewerOpenRef.current = true;
