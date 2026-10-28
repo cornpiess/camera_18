@@ -34,10 +34,19 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
     else {
       if (typeof v.recipe.version !== 'string' || v.recipe.version.trim() === '') e('recipe.version must be a non-empty string');
       if (!['approximation', 'candidate', 'measured', 'passthrough'].includes(v.recipe.status as string)) e('recipe.status is unsupported');
-      if (v.recipe.colorContract !== 'camera18-srgb-ci-v1') e('recipe.colorContract is unsupported');
+      if (!['camera18-srgb-ci-v1', 'camera18-srgb-ci-v2'].includes(v.recipe.colorContract as string)) e('recipe.colorContract is unsupported');
       if (v.recipe.datasetId !== undefined && (typeof v.recipe.datasetId !== 'string' || v.recipe.datasetId.trim() === '')) e('recipe.datasetId must be a non-empty string');
       if (v.recipe.status === 'measured' && typeof v.recipe.datasetId !== 'string') e('measured recipes require recipe.datasetId');
       if (v.recipe.status === 'passthrough' && v.passthrough !== true) e('passthrough recipe requires passthrough=true');
+    }
+  }
+  const unified = obj(v.recipe) && v.recipe.colorContract === 'camera18-srgb-ci-v2';
+  if (v.adaptive !== undefined) {
+    if (!unified) e('adaptive requires camera18-srgb-ci-v2');
+    if (nums(v.adaptive, ['highlightProtection', 'shadowChromaProtection', 'skinProtection'], 'adaptive', e)) {
+      optNum(v.adaptive, 'highlightProtection', 'adaptive', e, [0, 1]);
+      optNum(v.adaptive, 'shadowChromaProtection', 'adaptive', e, [0, 0.3]);
+      optNum(v.adaptive, 'skinProtection', 'adaptive', e, [0, 0.3]);
     }
   }
   // Optional: the passthrough ORIG profile legitimately has no aperture identity.
@@ -76,13 +85,15 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
       if (Array.isArray(curve[0]) && curve[0][0] !== 0) e('tone.curve[0][0] must be 0 so the curve starts at black');
       if (Array.isArray(curve[4]) && curve[4][0] !== 1) e('tone.curve[4][0] must be 1 so the curve ends at white');
       let last = -Infinity;
+      let lastY = -Infinity;
       curve.forEach((point, j) => {
         if (!Array.isArray(point) || point.length !== 2 || point.some(n => typeof n !== 'number' || !Number.isFinite(n))) { e(`tone.curve[${j}] must be a finite [x, y] tuple`); return; }
         const x = point[0] as number;
         const y = point[1] as number;
         if (x < 0 || x > 1 || y < 0 || y > 1) e(`tone.curve[${j}] values must be between 0 and 1`);
         if (x <= last) e(`tone.curve[${j}][0] must increase strictly`);
-        last = x;
+        if (unified && y < lastY) e(`tone.curve[${j}][1] must not decrease in v2`);
+        last = x; lastY = y;
       });
     }
   }
@@ -111,6 +122,7 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
           optNum(band, 'hue', `color.hueBands.${b}`, e, [-180, 180]);
           optNum(band, 'saturation', `color.hueBands.${b}`, e, [0, 4]);
           optNum(band, 'luminance', `color.hueBands.${b}`, e, [0, 4]);
+          if (unified && band.luminance !== 1) e(`color.hueBands.${b}.luminance must be 1 in v2; use tone for luminance`);
         }
       });
     }
@@ -129,6 +141,13 @@ const pushProfileErrors = (v: unknown, e: (message: string) => void): void => {
       optNum(v.texture.vignette, 'radius', 'texture.vignette', e, [0.3, 1.5]);
     }
     if (v.texture.halation !== undefined) nums(v.texture.halation, ['amount','radius'], 'texture.halation', e);
+    if (v.texture.detail !== undefined) {
+      if (!unified) e('texture.detail requires camera18-srgb-ci-v2');
+      if (nums(v.texture.detail, ['edgeSoftness', 'radius'], 'texture.detail', e)) {
+        optNum(v.texture.detail, 'edgeSoftness', 'texture.detail', e, [0, 0.35]);
+        optNum(v.texture.detail, 'radius', 'texture.detail', e, [0.25, 1.5]);
+      }
+    }
     optNum(v.texture, 'deharsh', 'texture', e, [0, 1]);
     if (v.texture.starburst !== undefined) {
       nums(v.texture.starburst, ['threshold','strength','length','rays'], 'texture.starburst', e);

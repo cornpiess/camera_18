@@ -82,12 +82,14 @@ export interface TextureSettings {
    * itself untouched. Renderer v4 applies the identical stage in preview and photo.
    */
   readonly deharsh?: number;
+  /** v2 only: fine-edge attenuation, bounded to avoid whole-image softness. */
+  readonly detail?: { readonly edgeSoftness: number; readonly radius: number };
   readonly starburst?: StarburstSettings;
 }
 export interface RecipeInfo {
   readonly version: string;
   readonly status: 'approximation' | 'candidate' | 'measured' | 'passthrough';
-  readonly colorContract: 'camera18-srgb-ci-v1';
+  readonly colorContract: 'camera18-srgb-ci-v1' | 'camera18-srgb-ci-v2';
   readonly datasetId?: string;
 }
 export interface CameraProfile {
@@ -110,6 +112,12 @@ export interface CameraProfile {
   readonly tone: ToneSettings;
   readonly color: GlobalColorAdjustments;
   readonly texture: TextureSettings;
+  /** v2 only. Maximum scene protection, never a second artistic style. */
+  readonly adaptive?: {
+    readonly highlightProtection: number;
+    readonly shadowChromaProtection: number;
+    readonly skinProtection: number;
+  };
 }
 export interface ProfileDocument {
   readonly schemaVersion: 1;

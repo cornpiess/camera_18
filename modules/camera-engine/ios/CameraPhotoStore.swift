@@ -261,11 +261,12 @@ final class CameraPhotoStore {
             destination = output.renderedContentURL
           }
           let rendered = self.folder(job.id).appendingPathComponent("final.data")
-          try self.render(job, source: url, destination: rendered, type: type.identifier)
+          let renderScene = try self.render(job, source: url, destination: rendered, type: type.identifier)
           try self.fm.copyItem(at: rendered, to: destination)
           output.adjustmentData = PHAdjustmentData(formatIdentifier: Self.adjustmentID, formatVersion: "1",
             data: try JSONSerialization.data(withJSONObject: ["captureID": job.id, "profile": profile,
-              "rendererVersion": CameraDNARenderer.rendererVersion]))
+              "rendererVersion": CameraDNARenderer.rendererVersion, "scene": renderScene.dictionary,
+              "colorContract": (profile["recipe"] as? [String: Any])?["colorContract"] ?? CameraDNARenderer.legacyColorContract]))
           PHPhotoLibrary.shared().performChanges({
             PHAssetChangeRequest(for: asset).contentEditingOutput = output
           }) { success, error in
@@ -284,7 +285,9 @@ final class CameraPhotoStore {
     }
   }
 
-  private func render(_ job: Job, source: URL, destination: URL, type: String) throws {
+  @discardableResult
+  private func render(_ job: Job, source: URL, destination: URL, type: String) throws -> CameraSceneContext {
+    let start = ProcessInfo.processInfo.systemUptime
     guard let dataSource = CGImageSourceCreateWithURL(source as CFURL, nil),
           let image = CIImage(contentsOf: source, options: [.applyOrientationProperty: true]) else {
       throw CameraEngineError.processingFailed
@@ -296,7 +299,10 @@ final class CameraPhotoStore {
     // Serialize invalidate+compile here; snapshots cannot pick up a later profile edit.
     CameraDNARenderer.invalidateCompiledProfile(recipe)
     let compiled = CameraDNARenderer.compile(recipe, normalizer: CameraInputNormalizer.definition(for: .processedPhoto))
-    let rendered = CameraDNARenderer.apply(compiled, to: image, finalPhoto: true)
+    let diagnostics = (try? JSONSerialization.jsonObject(with: job.diagnosticsData)) as? [String: Any] ?? [:]
+    let exposureScene = CameraSceneContext(dictionary: diagnostics["renderScene"] as? [String: Any] ?? [:])
+    let scene = compiled.unified ? CameraSceneContext.analyze(image).bounded(by: exposureScene) : .neutral
+    let rendered = CameraDNARenderer.apply(compiled, to: image, finalPhoto: true, scene: scene)
     guard rendered.extent.integral == image.extent.integral else { throw CameraEngineError.processingFailed }
     let metadata = CGImageSourceCopyPropertiesAtIndex(dataSource, 0, nil) as? [AnyHashable: Any]
     guard let encoded = Self.encodedRepresentation(rendered, metadata: metadata,
@@ -305,6 +311,8 @@ final class CameraPhotoStore {
       throw CameraEngineError.processingFailed
     }
     try encoded.write(to: destination, options: .atomic)
+    CameraRenderTimings.record(.photoProcessing, milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000)
+    return scene
   }
 
   private func deliver(_ job: Job, url: URL, fallback: Bool) {

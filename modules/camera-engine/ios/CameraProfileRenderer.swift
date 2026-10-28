@@ -213,31 +213,178 @@ enum CameraInputNormalizer {
   }
 }
 
+// Fixed names and rolling windows keep diagnostics bounded during long sessions.
+// GPU durations are command-buffer execution, never CPU graph-construction time.
+enum CameraRenderTimings {
+  enum Stage: String, Hashable { case previewGPU, sceneAnalysis, photoProcessing }
+  private static let lock = NSLock()
+  private static var samples: [Stage: [Double]] = [:]
+  static func record(_ stage: Stage, milliseconds: Double) {
+    guard milliseconds.isFinite, milliseconds > 0 else { return }
+    lock.lock(); defer { lock.unlock() }
+    var values = samples[stage] ?? []
+    if values.count == 64 { values.removeFirst() }
+    values.append(milliseconds); samples[stage] = values
+  }
+  static func snapshot() -> [String: Any] {
+    lock.lock(); let copy = samples; lock.unlock()
+    var result: [String: Any] = [:]
+    for (stage, values) in copy {
+      let sorted = values.sorted()
+      guard !sorted.isEmpty else { continue }
+      let statistics: [String: Any] = ["samples": sorted.count, "p50Ms": sorted[(sorted.count - 1) / 2],
+        "p95Ms": sorted[max(0, Int(ceil(Double(sorted.count) * 0.95)) - 1)]]
+      result[stage.rawValue] = statistics
+    }
+    return result
+  }
+}
+
+// Scene statistics are independent of the selected camera. A tiny float render is
+// scheduled at most twice per second, never on the main/preview render queue.
+struct CameraSceneContext {
+  var highlights: Double = 0
+  var shadows: Double = 0
+  var warmColors: Double = 0
+  var sampled = false
+  static let neutral = CameraSceneContext()
+
+  var dictionary: [String: Any] {
+    ["highlights": highlights, "shadows": shadows, "warmColors": warmColors, "sampled": sampled]
+  }
+  init() {}
+  init(dictionary: [String: Any]) {
+    func value(_ key: String) -> Double {
+      guard let n = dictionary[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else { return 0 }
+      return min(1, max(0, n.doubleValue))
+    }
+    highlights = value("highlights"); shadows = value("shadows"); warmColors = value("warmColors")
+    sampled = dictionary["sampled"] as? Bool == true
+  }
+  func blended(with next: CameraSceneContext, amount: Double) -> CameraSceneContext {
+    guard next.sampled else { return self }
+    guard sampled else { return next }
+    var result = self
+    let a = min(1, max(0, amount))
+    result.highlights += (next.highlights - highlights) * a
+    result.shadows += (next.shadows - shadows) * a
+    result.warmColors += (next.warmColors - warmColors) * a
+    return result
+  }
+  // Final-frame refinement cannot turn a late Apple render into a new style.
+  func bounded(by exposure: CameraSceneContext) -> CameraSceneContext {
+    guard sampled else { return exposure }
+    guard exposure.sampled else { return self }
+    var result = self
+    result.highlights = min(exposure.highlights + 0.15, max(exposure.highlights - 0.15, highlights))
+    result.shadows = min(exposure.shadows + 0.15, max(exposure.shadows - 0.15, shadows))
+    result.warmColors = min(exposure.warmColors + 0.15, max(exposure.warmColors - 0.15, warmColors))
+    return result
+  }
+  static func analyze(_ source: CIImage) -> CameraSceneContext {
+    let start = ProcessInfo.processInfo.systemUptime
+    defer { CameraRenderTimings.record(.sceneAnalysis, milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000) }
+    let extent = source.extent
+    guard !extent.isInfinite, !extent.isEmpty, extent.width.isFinite, extent.height.isFinite else { return .neutral }
+    let width = 32, height = 32
+    let small = source.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+      .transformed(by: CGAffineTransform(scaleX: CGFloat(width) / extent.width, y: CGFloat(height) / extent.height))
+    var values = [Float](repeating: 0, count: width * height * 4)
+    values.withUnsafeMutableBytes { buffer in
+      CameraEngineGPU.ciContext.render(small, toBitmap: buffer.baseAddress!, rowBytes: width * 16,
+        bounds: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)), format: .RGBAf, colorSpace: CameraEngineGPU.sRGBColorSpace)
+    }
+    var result = CameraSceneContext(), count = 0.0
+    for index in 0..<(width * height) {
+      let offset = index * 4
+      let r = Double(values[offset]), g = Double(values[offset + 1]), b = Double(values[offset + 2])
+      guard r.isFinite, g.isFinite, b.isFinite, values[offset + 3] > 0.5 else { continue }
+      let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      result.highlights += min(1, max(0, (max(r, max(g, b)) - 0.82) / 0.18))
+      result.shadows += min(1, max(0, (0.22 - y) / 0.22))
+      // Chromatic confidence, NOT a person/ethnicity classifier. Local protection
+      // below stays weak; warm objects may receive the same bounded protection.
+      result.warmColors += skinConfidence(r, g, b)
+      count += 1
+    }
+    guard count > 0 else { return .neutral }
+    result.highlights = min(1, result.highlights / count * 4)
+    result.shadows /= count; result.warmColors /= count; result.sampled = true
+    return result
+  }
+  static func skinConfidence(_ r: Double, _ g: Double, _ b: Double) -> Double {
+    let hi = max(r, max(g, b)), lo = min(r, min(g, b))
+    guard hi > lo + 0.02, r > g, g > b, hi > 0.08 else { return 0 }
+    let hue = 60 * (g - b) / (hi - lo)
+    let saturation = (hi - lo) / hi
+    let warm = max(0, 1 - abs(hue - 28) / 25)
+    return warm * min(1, saturation / 0.15) * max(0, min(1, (0.90 - saturation) / 0.25))
+  }
+}
+
+final class CameraSceneAnalyzer {
+  private let lock = NSLock()
+  private let queue = DispatchQueue(label: "camera-engine.scene", qos: .utility)
+  private var value = CameraSceneContext.neutral
+  private var generation = 0
+  private var running = false
+  private var lastScheduled = -Double.infinity
+  private var lastCompleted = -Double.infinity
+  func reset() {
+    lock.lock(); defer { lock.unlock() }
+    generation += 1; value = .neutral; lastScheduled = -Double.infinity; lastCompleted = -Double.infinity
+    // An old job keeps its single slot until it finishes; no queue accumulation.
+  }
+  func snapshot() -> CameraSceneContext {
+    lock.lock(); defer { lock.unlock() }
+    return ProcessInfo.processInfo.systemUptime - lastCompleted < 2 ? value : .neutral
+  }
+  func offer(_ image: CIImage) {
+    // Keep capture quality; scene safety can use neutral bounds under thermal load.
+    switch ProcessInfo.processInfo.thermalState {
+    case .serious, .critical: return
+    default: break
+    }
+    let now = ProcessInfo.processInfo.systemUptime
+    lock.lock()
+    guard !running, now - lastScheduled >= 0.5 else { lock.unlock(); return }
+    running = true; lastScheduled = now
+    let lease = generation
+    lock.unlock()
+    queue.async {
+      let measured = autoreleasepool { CameraSceneContext.analyze(image) }
+      self.lock.lock(); defer { self.lock.unlock() }
+      self.running = false
+      guard lease == self.generation, measured.sampled else { return }
+      self.value = self.value.blended(with: measured, amount: 0.25)
+      self.lastCompleted = ProcessInfo.processInfo.systemUptime
+    }
+  }
+}
+
 // MARK: - Unified Camera DNA Renderer (v2 — CompiledCameraProfile architecture)
-/// Production renderer for preview and final output:
-///   Input Normalizer (fused into the cube) → ONE effective 33³ cube → Tone stages.
-/// Camera 18 does NOT redo Apple's ISP: no noise reduction, no sharpening, no unsharp
-/// mask or local tone mapping. Shared vignette/highlight chroma relief; optional final-only monochrome grain;
-/// no halation, no fake optical starburst or software depth blur.
-///
-/// COLOR PIPELINE CONTRACT (fixed; do not introduce per-path divergence):
-///   Source decode (CIImage float working space) → Normalizer (fused in cube)
-///   → CIColorCubeWithColorSpace with inputColorSpace = sRGB (the LUTs are calibrated
-///   in sRGB — preview and final MUST keep this identical) → Tone (CI working space)
-///   → Shared deharsh (highlight chroma relief, texture.deharsh) → Export sRGB. No
-///   implicit per-path color-space differences, no redundant conversions. Precision:
-///   Core Image processes in its float working space end to end; quantization to 8-bit
-///   happens exactly once, inside the final HEIF/JPEG encode.
+/// One renderer, versioned color contracts. Legacy v1 recipes retain their order.
+/// v2: bounded detail -> tone -> luma-anchored color -> local safety -> surface.
+/// Preview, photos and calibration share this implementation; no brand routing,
+/// software depth, synthetic starburst, per-frame cube builds or extra CIContexts.
 enum CameraDNARenderer {
   /// Bump on ANY change to cube compilation or tone application so stale cached cubes
   /// can never survive a renderer change (cache key includes this).
-  static let rendererVersion = 4
-  static let colorContract = "camera18-srgb-ci-v1"
+  static let rendererVersion = 5
+  static let colorContract = "camera18-srgb-ci-v2"
+  static let legacyColorContract = "camera18-srgb-ci-v1"
   private static let hueBandNames = ["red", "orange", "yellow", "green", "cyan", "blue", "magenta"]
 
   /// Per-frame render state: everything expensive (cube, tone interpretation) is
   /// resolved ONCE at compile time; the frame loop consumes only this struct.
   struct CompiledCameraProfile {
+    let colorContract: String
+    var unified: Bool { colorContract == CameraDNARenderer.colorContract }
+    let edgeSoftness: Double
+    let detailRadius: Double
+    let highlightProtection: Double
+    let shadowChromaProtection: Double
+    let skinProtection: Double
     let effectiveCube: (dimension: Int, data: Data)?
     let exposureEV: Double
     let contrast: Double
@@ -260,11 +407,17 @@ enum CameraDNARenderer {
   }
 
   /// Unified rendering pipeline — consumes ONLY a compiled profile (no JSON per frame).
-  /// Source → effective cube (normalizer + LUT + fine color) → Exposure → Contrast →
-  /// Black point → Tone curve → Deharsh → Vignette → [final only: Grain]. Every stage skips itself
-  /// when neutral.
-  static func apply(_ compiled: CompiledCameraProfile, to source: CIImage, finalPhoto: Bool = false) -> CIImage {
+  /// v2: fine detail -> tone -> color-only cube -> bounded safety -> surface.
+  /// v1: historical cube -> tone -> deharsh -> surface, including final-only grain.
+  /// Neutral stages skip themselves. No per-frame JSON/cube compilation.
+  static func apply(_ compiled: CompiledCameraProfile, to source: CIImage, finalPhoto: Bool = false,
+                    scene: CameraSceneContext = .neutral) -> CIImage {
     var image = source
+    if compiled.unified {
+      image = applyDetail(compiled, to: image)
+      image = applyTone(compiled, to: image, scene: scene)
+    }
+    let beforeColor = image
 
     if let effective = compiled.effectiveCube {
       image = filter("CIColorCubeWithColorSpace", image, [
@@ -274,23 +427,26 @@ enum CameraDNARenderer {
       ])
     }
 
-    if abs(compiled.exposureEV) > 0.001 {
-      image = filter("CIExposureAdjust", image, [kCIInputEVKey: compiled.exposureEV])
-    }
-    if abs(compiled.contrast - 1.0) > 0.001 {
-      image = filter("CIColorControls", image, [kCIInputSaturationKey: 1.0, kCIInputContrastKey: compiled.contrast, kCIInputBrightnessKey: 0.0])
-    }
-    if compiled.blackPoint > 0 {
-      let scale = 1.0 / (1.0 - compiled.blackPoint)
-      image = filter("CIColorMatrix", image, [
-        "inputRVector": CIVector(x: CGFloat(scale), y: 0, z: 0, w: 0),
-        "inputGVector": CIVector(x: 0, y: CGFloat(scale), z: 0, w: 0),
-        "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(scale), w: 0),
-        "inputBiasVector": CIVector(x: CGFloat(-compiled.blackPoint * scale), y: CGFloat(-compiled.blackPoint * scale), z: CGFloat(-compiled.blackPoint * scale), w: 0)
-      ])
-    }
-    if let points = compiled.toneCurve {
-      image = filter("CIToneCurve", image, Dictionary(uniqueKeysWithValues: points.enumerated().map { ("inputPoint\($0.offset)", $0.element) }))
+    if !compiled.unified { image = applyTone(compiled, to: image, scene: .neutral) }
+    else {
+      // Only a weak chromatic confidence mask; no semantic body/face alteration.
+      if compiled.skinProtection > 0.0005 {
+        let weight = compiled.skinProtection * (0.5 + min(0.5, scene.warmColors * 2))
+        let mask = scaledMask(colorMask(beforeColor, cube: skinMaskCube), amount: weight)
+        image = filter("CIBlendWithMask", beforeColor, ["inputBackgroundImage": image, "inputMaskImage": mask])
+      }
+      if compiled.shadowChromaProtection > 0.0005, scene.shadows > 0.001 {
+        let amount = compiled.shadowChromaProtection * scene.shadows
+        let desaturated = filter("CIColorControls", image, [kCIInputSaturationKey: 1 - amount])
+        var mask = filter("CIToneCurve", grayscale(image), [
+          "inputPoint0": CIVector(x: 0, y: 1), "inputPoint1": CIVector(x: 0.1, y: 1),
+          "inputPoint2": CIVector(x: 0.25, y: 0.1), "inputPoint3": CIVector(x: 0.5, y: 0),
+          "inputPoint4": CIVector(x: 1, y: 0),
+        ])
+        mask = filter("CIColorClamp", mask, ["inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+          "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)])
+        image = filter("CIBlendWithMask", desaturated, ["inputBackgroundImage": image, "inputMaskImage": mask])
+      }
     }
 
     // DEHARSH (shared preview/photo color stage): highlight chroma relief after the tone curve — the last
@@ -335,13 +491,14 @@ enum CameraDNARenderer {
         "inputIntensity": compiled.vignetteAmount,
       ])
     }
-    // Final only: monochrome soft-light grain around neutral gray. No subject blur
-    // and no random noise shimmering in the live viewfinder. Size scales with resolution.
-    if finalPhoto, compiled.grainAmount > 0.0005,
+    // v1 preserves final-only grain. v2 uses a stationary, resolution-relative
+    // pattern in both paths. Every bundled profile keeps grain disabled.
+    if (finalPhoto || compiled.unified), compiled.grainAmount > 0.0005,
        let random = CIFilter(name: "CIRandomGenerator")?.outputImage {
       let extent = source.extent
-      let scale = max(1.0, min(extent.width, extent.height) / 1600.0 * CGFloat(compiled.grainSize))
-      let offset = CGAffineTransform(translationX: CGFloat.random(in: -512...512), y: CGFloat.random(in: -512...512))
+      let scale = max(compiled.unified ? 0.25 : 1.0, min(extent.width, extent.height) / 1600.0 * CGFloat(compiled.grainSize))
+      let offset = compiled.unified ? CGAffineTransform.identity
+        : CGAffineTransform(translationX: CGFloat.random(in: -512...512), y: CGFloat.random(in: -512...512))
       let noise = random.transformed(by: offset).transformed(by: CGAffineTransform(scaleX: scale, y: scale)).cropped(to: extent)
       let amount = CGFloat(compiled.grainAmount)
       let monochrome = CIVector(x: amount, y: 0, z: 0, w: 0)
@@ -353,6 +510,81 @@ enum CameraDNARenderer {
       image = filter("CISoftLightBlendMode", grain, ["inputBackgroundImage": image])
     }
     return image.cropped(to: source.extent)
+  }
+
+  private static func applyTone(_ compiled: CompiledCameraProfile, to source: CIImage, scene: CameraSceneContext) -> CIImage {
+    var image = source
+    if abs(compiled.exposureEV) > 0.001 {
+      image = filter("CIExposureAdjust", image, [kCIInputEVKey: compiled.exposureEV])
+    }
+    if abs(compiled.contrast - 1.0) > 0.001 {
+      image = filter("CIColorControls", image, [kCIInputSaturationKey: 1.0, kCIInputContrastKey: compiled.contrast, kCIInputBrightnessKey: 0.0])
+    }
+    if compiled.blackPoint > 0 {
+      let scale = 1.0 / (1.0 - compiled.blackPoint)
+      image = filter("CIColorMatrix", image, [
+        "inputRVector": CIVector(x: CGFloat(scale), y: 0, z: 0, w: 0),
+        "inputGVector": CIVector(x: 0, y: CGFloat(scale), z: 0, w: 0),
+        "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(scale), w: 0),
+        "inputBiasVector": CIVector(x: CGFloat(-compiled.blackPoint * scale), y: CGFloat(-compiled.blackPoint * scale), z: CGFloat(-compiled.blackPoint * scale), w: 0)
+      ])
+    }
+    if var points = compiled.toneCurve {
+      if compiled.unified, compiled.highlightProtection > 0, scene.sampled {
+        let reduction = compiled.highlightProtection * scene.highlights
+        points[3] = CIVector(x: points[3].x, y: max(points[2].y, points[3].y - CGFloat(reduction * 0.04)))
+        points[4] = CIVector(x: points[4].x, y: max(points[3].y, points[4].y - CGFloat(reduction * 0.02)))
+      }
+      image = filter("CIToneCurve", image, Dictionary(uniqueKeysWithValues: points.enumerated().map { ("inputPoint\($0.offset)", $0.element) }))
+    }
+
+    return image
+  }
+
+  private static func grayscale(_ image: CIImage) -> CIImage {
+    let weights = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+    return filter("CIColorMatrix", image, ["inputRVector": weights, "inputGVector": weights, "inputBVector": weights])
+  }
+  private static func scaledMask(_ image: CIImage, amount: Double) -> CIImage {
+    let scale = CGFloat(min(1, max(0, amount)))
+    return filter("CIColorMatrix", image, [
+      "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
+      "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
+      "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
+    ])
+  }
+  // Fine edge attenuation, not whole-image blur or a claim to reconstruct lost
+  // detail. Radius follows image size; weak detail below the mask cut-in is kept.
+  private static func applyDetail(_ compiled: CompiledCameraProfile, to image: CIImage) -> CIImage {
+    guard compiled.edgeSoftness > 0.0005 else { return image }
+    let extent = image.extent
+    let radius = max(0.25, min(extent.width, extent.height) / 1600 * CGFloat(compiled.detailRadius))
+    let soft = filter("CIGaussianBlur", image.clampedToExtent(), [kCIInputRadiusKey: radius]).cropped(to: extent)
+    let difference = grayscale(filter("CIDifferenceBlendMode", image, ["inputBackgroundImage": soft]))
+    let scale = CGFloat(compiled.edgeSoftness * 6)
+    let row = CIVector(x: scale, y: 0, z: 0, w: 0)
+    var mask = filter("CIColorMatrix", difference, [
+      "inputRVector": row, "inputGVector": row, "inputBVector": row,
+      "inputBiasVector": CIVector(x: -0.02, y: -0.02, z: -0.02, w: 0),
+    ])
+    mask = filter("CIColorClamp", mask, ["inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+      "inputMaxComponents": CIVector(x: 0.12, y: 0.12, z: 0.12, w: 1)])
+    let luminanceOnly = filter("CILuminosityBlendMode", soft, ["inputBackgroundImage": image])
+    return filter("CIBlendWithMask", luminanceOnly, ["inputBackgroundImage": image, "inputMaskImage": mask]).cropped(to: extent)
+  }
+  private static let skinMaskCube: Data = {
+    var values = [Float]()
+    for b in 0..<17 { for g in 0..<17 { for r in 0..<17 {
+      let weight = CameraSceneContext.skinConfidence(Double(r) / 16, Double(g) / 16, Double(b) / 16)
+      // Masks are consumed in linear light. Encode here because the cube is sRGB.
+      let encoded = weight <= 0.0031308 ? weight * 12.92 : 1.055 * pow(weight, 1 / 2.4) - 0.055
+      values.append(contentsOf: [Float(encoded), Float(encoded), Float(encoded), 1])
+    } } }
+    return dataFromFloats(values)
+  }()
+  private static func colorMask(_ image: CIImage, cube: Data) -> CIImage {
+    filter("CIColorCubeWithColorSpace", image, ["inputCubeDimension": 17, "inputCubeData": cube,
+      "inputColorSpace": CameraEngineGPU.sRGBColorSpace])
   }
 
   /// Identity contract self-check: an identity normalizer on a neutral profile must
@@ -401,6 +633,8 @@ enum CameraDNARenderer {
       "color": profile["color"] ?? NSNull(),
       "tone": profile["tone"] ?? NSNull(),
       "texture": profile["texture"] ?? NSNull(),
+      "adaptive": profile["adaptive"] ?? NSNull(),
+      "contract": dictionary(profile["recipe"])["colorContract"] ?? legacyColorContract,
     ])
     cubeLock.lock(); defer { cubeLock.unlock() }
     if let seen = profileColorFingerprints[id], seen == fingerprint { return }
@@ -425,13 +659,22 @@ enum CameraDNARenderer {
     let id = (profile["id"] as? String) ?? "anonymous"
     let tone = dictionary(profile["tone"])
     let color = dictionary(profile["color"])
+    let contract = dictionary(profile["recipe"])["colorContract"] as? String ?? legacyColorContract
+    let unified = contract == colorContract
+    let detail = dictionary(dictionary(profile["texture"])["detail"])
+    let adaptive = dictionary(profile["adaptive"])
+    let edgeSoftness = unified ? number(detail, "edgeSoftness", 0, 0...0.35) : 0
+    let detailRadius = number(detail, "radius", 0.6, 0.25...1.5)
+    let highlightProtection = unified ? number(adaptive, "highlightProtection", 0, 0...1) : 0
+    let shadowChromaProtection = unified ? number(adaptive, "shadowChromaProtection", 0, 0...0.3) : 0
+    let skinProtection = unified ? number(adaptive, "skinProtection", 0, 0...0.3) : 0
 
     // Tone interpretation happens HERE, once — never per frame.
     let exposureEV = number(tone, "exposure", 0, -5...5)
     let contrast = number(tone, "contrast", 1, 0...4)
     let blackPoint = number(tone, "blackPoint", 0, 0...0.95)
     let rawCurve = toneCurve(tone["curve"])
-    let curve = (rawCurve != nil && !isIdentityToneCurve(rawCurve!)) ? rawCurve : nil
+    let curve = (rawCurve != nil && (!isIdentityToneCurve(rawCurve!) || (unified && highlightProtection > 0))) ? rawCurve : nil
     let toneIsNeutral = abs(exposureEV) <= 0.001 && abs(contrast - 1.0) <= 0.001 && blackPoint <= 0 && curve == nil
     // Shared color-stage strength (texture.deharsh, 0..1). Absent = 0 = skipped.
     let deharshAmount = number(dictionary(profile["texture"]), "deharsh", 0, 0...1)
@@ -487,6 +730,8 @@ enum CameraDNARenderer {
     }
 
     let compiled = CompiledCameraProfile(
+      colorContract: contract, edgeSoftness: edgeSoftness, detailRadius: detailRadius,
+      highlightProtection: highlightProtection, shadowChromaProtection: shadowChromaProtection, skinProtection: skinProtection,
       effectiveCube: effectiveCube,
       exposureEV: exposureEV,
       contrast: contrast,
@@ -503,6 +748,7 @@ enum CameraDNARenderer {
       normalizerRevision: normalizer.revision,
       rendererVersion: rendererVersion,
       isIdentity: effectiveCube == nil && toneIsNeutral && deharshAmount <= 0.0005 && grainAmount <= 0.0005 && vignetteAmount <= 0.0005
+        && edgeSoftness <= 0.0005 && highlightProtection <= 0.0005 && shadowChromaProtection <= 0.0005 && skinProtection <= 0.0005
     )
 
     cubeLock.lock()
@@ -631,6 +877,24 @@ enum CameraDNARenderer {
         values[o] = Float(min(1.0, max(0.0, r)))
         values[o + 1] = Float(min(1.0, max(0.0, g)))
         values[o + 2] = Float(min(1.0, max(0.0, b)))
+      }
+    }
+    if dictionary(profile["recipe"])["colorContract"] as? String == colorContract {
+      let denominator = Double(dim - 1)
+      for index in 0..<count {
+        let o = index * 4
+        let inputY = (0.2126 * Double(index % dim) + 0.7152 * Double((index / dim) % dim)
+          + 0.0722 * Double(index / (dim * dim))) / denominator
+        let y = 0.2126 * Double(values[o]) + 0.7152 * Double(values[o + 1]) + 0.0722 * Double(values[o + 2])
+        let chroma = [Double(values[o]) - y, Double(values[o + 1]) - y, Double(values[o + 2]) - y]
+        var gamut = 1.0
+        for c in chroma {
+          if c > 0 { gamut = min(gamut, (1 - inputY) / c) }
+          else if c < 0 { gamut = min(gamut, -inputY / c) }
+        }
+        values[o] = Float(inputY + chroma[0] * gamut)
+        values[o + 1] = Float(inputY + chroma[1] * gamut)
+        values[o + 2] = Float(inputY + chroma[2] * gamut)
       }
     }
     return (dim, dataFromFloats(values))

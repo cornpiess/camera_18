@@ -106,6 +106,7 @@ export function CalibrationModal({ visible, onClose, apertureDemoMode = false, o
         `Device: ${d.deviceModel ?? '?'}`,
         `Renderer: ${d.rendererVersion ?? 'old build'} · ${d.colorContract ?? 'contract not reported'}`,
         `Input normalizers: ${d.normalizers?.join('; ') ?? 'not reported'}`,
+        `Render timings (last 64 per stage): ${JSON.stringify(d.renderTimings ?? {})}`,
         `Aperture: ${apertureLine}, active ƒ/${d.activeAperture ?? '?'}`,
         `Aperture diag: ${d.apertureDiag ? JSON.stringify(d.apertureDiag) : '(not reported — OLD BUILD without the runtime-discovery fix)'}`,
         `Aperture Demo mode: ${apertureDemoMode ? 'ON' : 'OFF'}`,

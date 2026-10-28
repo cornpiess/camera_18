@@ -1,8 +1,8 @@
 # Camera18 技术架构
 
-当前方案（2026-10-27）：经典相机色彩／影调模拟 + 真实光圈控制。用户仍只控制相机、光圈、后置焦段。
+当前分支（2026-10-28）：统一相机成像引擎v5 + 真实光圈控制。用户仍只控制相机、光圈、后置焦段；成像效果与响应待原生及真机验收。
 
-下一轮成像升级的设计见[统一相机模拟技术方案](docs/camera-simulation-plan.md)：以拍摄顺畅、实时风格可感知、成片美感为目标，沿用采集／渲染／存储三个职责。该方案尚未实施，不代表下文现有渲染器已具备新增能力。
+设计依据见[统一相机模拟技术方案](docs/camera-simulation-plan.md)。本分支落地共享引擎、场景保护和版本化配方；ProRAW只加入离线对比工具，默认采集与推荐光圈保持既有契约。
 
 ## 2026-10-28 拍摄状态与照片交付闭环（最新）
 
@@ -46,11 +46,15 @@
 
 应用与 macOS 离线工具编译相同的 `modules/camera-engine/ios/CameraProfileRenderer.swift`，不复制滤镜逻辑。
 
-共享：输入归一化（当前 identity）→ LUT 强度／色温／饱和／七分区 HSL／分离染色预编译 cube → 曝光 → 对比 → 黑位 → 五点曲线 → deharsh → 暗角。
+v5内置风格使用 `camera18-srgb-ci-v2`：输入适配 → 有界细边缘亮度混合 → 影调 → 颜色cube → 肤色候选／暗部色彩保护 → 高光去饱和／暗角／可选颗粒。cube在编码sRGB域锚定输入luma，并向中性色压缩越界chroma；这是明暗与颜色职责分离，不等于真实光度标定。影调迁移取旧配方CPU中性轴作为起点，仍是approximation，不能据此宣称实机还原。
 
-可选颗粒仅成片执行；八种内置模式当前全部零额外颗粒。预览头部按 1280px 上限降采样，成片全分辨率。ORIG 按 passthrough 原始 bytes 保存，完全绕过渲染与重编码。
+旧override和无版本配方继续按v1次序执行（cube→tone→deharsh→surface），不静默迁移。ORIG继续原字节直通。七种风格配方全部接入v2，八模式均零额外颗粒；没有新增软件景深、假星芒或未经参考验证的光晕。光学参数不参与猜测性的像素模拟。
 
-工作空间显式 extended linear sRGB；cube 继续指定 sRGB，输出 sRGB。颜色约定 `camera18-srgb-ci-v1`；rendererVersion=4。原生传递函数与像素自检尚待 macOS 执行，不能把 CPU 近似当作原生正确性证明。
+`CameraSceneAnalyzer`只在后台对32×32浮点小图做最多2Hz统计，最多一个在途任务，结果平滑且镜头事务重置代际；高温暂停分析。它识别颜色置信度而非语义人像，不宣称精确识别人脸。captureID诊断冻结场景统计，最终底片重新分析但最多细化±0.15；最终使用的上下文连同配方／版本写入Photos编辑数据。全分辨率数据不经JS。
+
+工作空间保持extended linear sRGB，cube指定sRGB；预览／成片显示与输出均为sRGB SDR，原始HDR资源保留，风格结果不携带旧增益图。预览头部降采样≤1280px，成片保留完整尺寸；细节半径随图像尺寸换算，v2可选颗粒同源且固定图案避免实时闪烁。
+
+调试诊断记录最近64次／阶段的P50/P95：预览GPU为Metal完成回调的实际执行时间，sceneAnalysis为小图分析耗时，photoProcessing包含显影图处理和编码写盘，不包含Apple延迟、Photos保存或排队。它们是测量工具，不代表30fps／150ms目标已达成。
 
 每个 Profile + 渲染内容版本 + normalizer + rendererVersion 编译缓存；颜色／tone／texture 改动才失效，同 id 淘汰旧版本，不随光圈拖动重复编译。复用静态 CIContext。
 

@@ -69,12 +69,14 @@ const satOf = ([r, g, b]) => { const mx = Math.max(r, g, b), mn = Math.min(r, g,
 function applyPipeline(profile, rgb) {
   if (profile.passthrough) return [...rgb];
   const c = profile.color;
+  const unified = profile.recipe?.colorContract === 'camera18-srgb-ci-v2';
+  const input = unified ? applyTone(profile,rgb) : rgb;
   // LUT 缺失（如 ORIG 的 null）或加载失败：原生管线会跳过 cube 阶段直通——
   // 审计同样按直通处理，而不是解构 null 崩掉整个审计。
   const lut = c.lut ? lutCache(c.lut) : null;
-  let [r, g, b] = lut ? sampleLUT(lut, ...rgb) : rgb;
+  let [r, g, b] = lut ? sampleLUT(lut, ...input) : input;
   const i = c.lutIntensity ?? 1;
-  if (i < 0.999) { r = i * r + (1 - i) * rgb[0]; g = i * g + (1 - i) * rgb[1]; b = i * b + (1 - i) * rgb[2]; }
+  if (i < 0.999) { r = i * r + (1 - i) * input[0]; g = i * g + (1 - i) * input[1]; b = i * b + (1 - i) * input[2]; }
   // temperature/tint (mirror native gains)
   const t = (6500 + (c.temperature ?? 0)) / 6500;
   r *= Math.min(2, Math.pow(t, 0.22)); b *= Math.min(2, Math.pow(1 / t, 0.22));
@@ -108,8 +110,19 @@ function applyPipeline(profile, rgb) {
     const biasY=.2126*bias[0]+.7152*bias[1]+.0722*bias[2];
     [r,g,b]=[r,g,b].map((v,k)=>clamp(v+bias[k]-biasY));
   }
-  // tone: exposure → contrast → black point → curve
-  let v = [r, g, b].map((x) => x * Math.pow(2, profile.tone.exposure ?? 0));
+  if (unified) {
+    const target = .2126*input[0]+.7152*input[1]+.0722*input[2];
+    const y = .2126*r+.7152*g+.0722*b;
+    const chroma = [r-y,g-y,b-y];
+    let gamut = 1;
+    for (const c of chroma) { if(c>0)gamut=Math.min(gamut,(1-target)/c);else if(c<0)gamut=Math.min(gamut,-target/c); }
+    return chroma.map(c=>clamp(target+c*gamut));
+  }
+  return applyTone(profile,[r,g,b]);
+}
+function applyTone(profile,rgb) {
+
+  let v = rgb.map((x) => x * Math.pow(2, profile.tone.exposure ?? 0));
   v = v.map((x) => (x - 0.5) * (profile.tone.contrast ?? 1) + 0.5);
   const bp = profile.tone.blackPoint ?? 0;
   if (bp > 0) { const s = 1 / (1 - bp); v = v.map((x) => x * s - bp * s); }
@@ -117,6 +130,7 @@ function applyPipeline(profile, rgb) {
   v = v.map((x) => curve5(profile.tone.curve, Math.min(1, Math.max(0, x))));
   return v.map((x) => Math.min(1, Math.max(0, x)));
 }
+
 function curve5(pts, x) {
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
   let k = 0; while (k < 3 && x > xs[k + 1]) k++;
@@ -146,7 +160,7 @@ function hslToRGB(h,s,l){
   });
 }
 
-module.exports = { applyPipeline, rgbToHSL, linearToOKLab, oklabDist, s2l };
+module.exports = { applyTone, applyPipeline, rgbToHSL, linearToOKLab, oklabDist, s2l };
 if (require.main === module) {
 
 const SKINS = [[0.937, 0.784, 0.686], [0.855, 0.639, 0.494], [0.616, 0.416, 0.298]];

@@ -934,6 +934,7 @@ public final class CameraEngineModule: Module {
         "rendererVersion": CameraDNARenderer.rendererVersion,
         "colorContract": CameraDNARenderer.colorContract,
         "identityCheck": CameraDNARenderer.identitySelfCheck(),
+        "renderTimings": CameraRenderTimings.snapshot(),
         "testingBuild": testingBuildFlag,
       ]
       let finish: (Result<[String: Any], CameraEngineError>) -> Void = { result in
@@ -1034,6 +1035,7 @@ public final class CameraEngineView: ExpoView {
   // Production architecture (converged): preview is DISPLAY ONLY. Every photo comes from
   // AVCapturePhotoOutput's full-resolution Apple-processed photo. No A/B/C/D triage.
   private let previewRenderer = PreviewRenderer()
+  private let sceneAnalyzer = CameraSceneAnalyzer()
   private var previewView: MTKView?
   // Fallback display for exotic no-Metal environments only.
   private let renderLayer = CALayer()
@@ -1523,6 +1525,7 @@ public final class CameraEngineView: ExpoView {
   ///   Fast Capture / ZSL / Responsive Capture capability re-check (off when unsupported)
   ///   Camera Control rebuild · aperture capability re-resolve (this lens's own format)
   private func configureForCurrentPhysicalCamera(_ device: AVCaptureDevice) throws {
+    sceneAnalyzer.reset()
     // Device-scoped policy for the ACTIVE lens.
     do {
       try device.lockForConfiguration()
@@ -1716,6 +1719,7 @@ public final class CameraEngineView: ExpoView {
         diagnostics["requestedWidth"] = self.output.maxPhotoDimensions.width
         diagnostics["requestedHeight"] = self.output.maxPhotoDimensions.height
       }
+      diagnostics["renderScene"] = self.sceneAnalyzer.snapshot().dictionary
       let delegate = PhotoCaptureDelegate(
         captureID: UUID().uuidString,
         profile: recipe,
@@ -2102,6 +2106,7 @@ public final class CameraEngineView: ExpoView {
                                 completion: @escaping (Result<Void, CameraEngineError>) -> Void) {
     sessionQueue.async {
       guard !self.exposing else { completion(.failure(.captureBusy)); return }
+      self.sceneAnalyzer.reset()
       self.focalGeneration += 1
       let generation = self.focalGeneration
       let previousLens = self.requestedLens
@@ -2406,7 +2411,8 @@ extension CameraEngineView: AVCaptureVideoDataOutputSampleBufferDelegate {
       image = image.transformed(by: CGAffineTransform(scaleX: downscale, y: downscale))
     }
     if let compiled = compiledPreviewSnapshot() {
-      image = CameraDNARenderer.apply(compiled, to: image)
+      if compiled.unified, !lensSwitching { sceneAnalyzer.offer(image) }
+      image = CameraDNARenderer.apply(compiled, to: image, scene: sceneAnalyzer.snapshot())
     }
     image = image.cropped(to: image.extent.integral)
     guard image.extent.width > 0, image.extent.height > 0 else { return }
@@ -2581,6 +2587,11 @@ private final class PreviewRenderer: NSObject, MTKViewDelegate {
       colorSpace: CameraEngineGPU.sRGBColorSpace,
     )
     commandBuffer.present(drawable)
+    commandBuffer.addCompletedHandler { completed in
+      if completed.status == .completed, completed.gpuStartTime > 0 {
+        CameraRenderTimings.record(.previewGPU, milliseconds: (completed.gpuEndTime - completed.gpuStartTime) * 1000)
+      }
+    }
     commandBuffer.commit()
   }
 }

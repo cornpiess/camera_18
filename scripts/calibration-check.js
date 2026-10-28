@@ -67,6 +67,9 @@ try {
   const all=[...split.train,...split.validation];
   const native={colorContract:'camera18-srgb-ci-v1',rendererVersion:4,mode:'final',input:all.map(s=>s.source),output:all.map(s=>s.target)};
   assert.equal(evaluateNative(data,native).validation.meanOKLabDistance,0);
+  assert.equal(evaluateNative(data,{...native, rendererVersion:5}).validation.meanOKLabDistance,0);
+  assert.equal(evaluateNative(data,{...native, rendererVersion:5, colorContract:'camera18-srgb-ci-v2'}).validation.meanOKLabDistance,0);
+  assert.throws(()=>evaluateNative(data,{...native,colorContract:'camera18-srgb-ci-v2'}),/compatible/);
   const mismatch=structuredClone(native);mismatch.input.reverse();
   assert.throws(()=>evaluateNative(data,mismatch),/order\/data/);
   const leaked=structuredClone(data);leaked.scenes[2].samples[0]=leaked.scenes[0].samples[0];
