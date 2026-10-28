@@ -6,6 +6,10 @@
 
 ---
 
+## 2026-10-28 PhotoKit 事务回归已验证形状（103 实机反馈后）
+
+用户实机反馈（build 103 = 6611d7a）：点重试弹 "Couldn't save the photo — check your storage"（ERR_SAVE_FAILED）与三振终态 "Originals kept" 横幅，**系统相册始终一张都没有** → PhotoKit 入库事务从未成功，非状态误报；三振机制本身工作正常（journal 读写与移档均有证据），排除落盘问题。与 build 92 时代（同设备保存稳定）逐行对照，新 CameraPhotoStore 的事务多了三样从未在真机验证过的配料：资源 options 的 uniformTypeIdentifier/originalFilename 提示、change block 内 journal 磁盘写、placeholder 为 nil 即 throw（journal 写失败还会把已提交的事务误报为 saveFailed）。本轮 createAsset 全部退回已验证事务形状：`addResource(.photo, fileURL:, options: nil)`（PhotoKit 自行嗅探，旧管线数月实证）；placeholder nil 不再致命（照片仍入库，仅无资产引用）；journal 持久化改 try? 尽力而为，成功事务永不被日志失败抹黑；成功+journalError 误报分支删除（该 error 只可能在事务注定失败的路上产生）。横幅附带原生 detail（101dc31）保留——若仍失败，下次点 pill 即可读到真实 NSError。Swift 编译与 PhotoKit 行为待 CI/真机验收；本轮不触发构建。
+
 ## 2026-10-28 保存失败提示死循环修复（0f92c45 之后）
 
 用户实机反馈（0f92c45 的 TestFlight build，21:29 构建）：点击拍照仍提示 Save failed · Tap to retry，点 pill 无任何反应。根因分析：上午旧 build（deferred proxy 流程）在设备上遗留了一批带 lastError 的失败任务；每次 startCamera（含每次回前台）`PhotoStore.resume()` 静默重试它们并确定性再失败（proxy 任务的 loadFinal 要 Photos 把 .photoProxy 加工成成片，旧数据无法完成），waiting 永远 >0 → pill 常驻；且 JS 对 retained 非 terminal 失败**刻意零提示**（App.tsx 旧注释），重试再失败完全不可见 →"tap 无效"；恢复面板"保留原图结束等待"又排除 proxy 任务（`!$0.proxy`）→ 无解死循环。

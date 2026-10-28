@@ -201,28 +201,28 @@ final class CameraPhotoStore {
     PHPhotoLibrary.shared().performChanges({
       let request = PHAssetCreationRequest.forAsset()
       do {
-        let options = PHAssetResourceCreationOptions()
-        if !job.proxy {
-          let resource = job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job)
-          if let imageSource = CGImageSourceCreateWithURL(resource as CFURL, nil), let type = CGImageSourceGetType(imageSource) {
-            options.uniformTypeIdentifier = type as String
-            options.originalFilename = "Camera18-\(job.id)." + ((type as String) == "public.jpeg" ? "jpg" : "heic")
-          }
-        }
         if job.proxy {
           // Match Apple's deferred-photo contract: pass the unmodified proxy bytes.
           // The private journal's .data suffix must not determine a Photos UTI.
           if #available(iOS 17.0, *) {
             request.addResource(with: .photoProxy, data: try Data(contentsOf: self.sourceURL(job)), options: nil)
           } else { throw CameraEngineError.processingFailed }
-        } else { request.addResource(with: .photo, fileURL: job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job), options: options) }
-        // Register the resource BEFORE asking for its placeholder. An empty asset
-        // request is not a valid new image and may not provide a placeholder.
+        } else {
+          // EXACTLY the transaction shape that saved reliably on real devices for
+          // months (pre-CameraPhotoStore pipeline): plain file resource, nil
+          // options, PhotoKit sniffs the file itself. The extra hints introduced
+          // with the journal store (uniformTypeIdentifier/originalFilename +
+          // journal disk I/O inside this block) coincided with a 100% transaction
+          // failure on an iPhone 18 Pro / iOS 27 device — every capture died with
+          // ERR_SAVE_FAILED and no asset ever appeared. No hint the device rejects
+          // belongs inside the change block.
+          request.addResource(with: .photo, fileURL: job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job), options: nil)
+        }
         job.assetID = request.placeholderForCreatedAsset?.localIdentifier
-        guard job.assetID != nil else { throw CameraEngineError.saveFailed }
-        // Persist before the change block completes; ambiguous completion never
-        // justifies creating a duplicate asset on the next launch.
-        try self.save(job)
+        // Persist the ID best-effort when we have one: a journal failure must
+        // never turn a committed asset into a reported save failure (a nil
+        // placeholder does not void the transaction — the photo still lands).
+        if job.assetID != nil { try? self.save(job) }
       } catch { journalError = error }
     }) { success, error in
       self.queue.async {
@@ -236,10 +236,6 @@ final class CameraPhotoStore {
         }
         job.originalConfirmed = true
         try? self.save(job)
-        if let journalError {
-          self.complete(job, error: .saveFailed, detail: journalError.localizedDescription)
-          return
-        }
         if job.flattened { self.deliver(job, url: self.folder(job.id).appendingPathComponent("rendered.data"), fallback: false) }
         else if !job.proxy { self.deliver(job, url: self.sourceURL(job), fallback: job.processingFallback == true) }
         else { self.loadFinal(job) }
