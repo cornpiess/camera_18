@@ -2,7 +2,7 @@
   "expo": {
     "name": "Camera 18",
     "slug": "aperture-camera",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "platforms": [
       "ios"
