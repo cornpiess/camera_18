@@ -1,6 +1,7 @@
 // diagLog must be imported first: it self-installs on import so that any module-evaluation
 // error from the imports below (native module resolution included) is already captured.
 import { recordDiag } from './src/utils/diagLog';
+import { settleCaptureReservation, canRequestCapture } from './src/camera/captureReceipts';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
@@ -9,9 +10,7 @@ import {
   Animated,
   Dimensions,
   AppState,
-  Image,
   Linking,
-  Modal,
   Platform,
   PanResponder,
   SafeAreaView,
@@ -31,7 +30,10 @@ import {
   CameraEngineView,
   type CapturedPhoto,
   type CameraCapabilities,
+  type CaptureState,
+  type PhotoDeliveryState,
   type CameraAuthorizationStatus,
+  type CameraEngineErrorCode,
 } from './src/camera/CameraEngine';
 // LoadCameraState, focal model, aperture visual linkage
 import { loadCameraState, saveCameraState, type CameraState } from './src/camera/cameraStateStore';
@@ -39,6 +41,9 @@ import { buildFocalStops, defaultFocalStop, type FocalStop, type PhysicalLens } 
 import {
   addApertureChangedListener,
   addPhotoProcessedListener,
+  addCaptureStateListener,
+  addShutterRequestedListener,
+  addPhotoDeliveryStateListener,
   addZoomChangedListener,
   setMockApertureMode,
 } from './src/camera/CameraEngine';
@@ -48,7 +53,7 @@ import { MAX_RING_PROFILES } from './src/components/RadialProfileSelector';
 import { accessFor } from './src/monetization/CameraAccessPolicy';
 import { TRIAL_LIMIT } from './src/monetization/MonetizationConfig';
 import { MONETIZATION_ENABLED, SUBSCRIPTIONS_MANAGE_URL } from './src/monetization/MonetizationConfig';
-import { showManageSubscriptions } from './src/monetization/Monetization';
+import { showManageSubscriptions, reconcileTrialReservations } from './src/monetization/Monetization';
 import { MonetizationProvider, useMonetization } from './src/monetization/MonetizationProvider';
 import { deriveSkin, isLightColor } from './src/theme/skin';
 
@@ -140,6 +145,8 @@ const FRIENDLY_ERROR_CODES = [
   'ERR_SAVE_FAILED',
   'ERR_NOT_RUNNING',
   'ERR_APERTURE_UNSUPPORTED',
+  'ERR_APERTURE_NOT_READY',
+  'ERR_PHOTO_READ_DENIED',
   'ERR_PERMISSION_DENIED',
   'ERR_CAMERA_UNAVAILABLE',
 ] as const;
@@ -152,6 +159,8 @@ const FRIENDLY_ERROR_KEYS: Record<(typeof FRIENDLY_ERROR_CODES)[number], StringK
   ERR_SAVE_FAILED: 'errSaveFailed',
   ERR_NOT_RUNNING: 'errNotRunning',
   ERR_APERTURE_UNSUPPORTED: 'errApertureUnsupported',
+  ERR_APERTURE_NOT_READY: 'errApertureNotReady',
+  ERR_PHOTO_READ_DENIED: 'errPhotoReadDenied',
   ERR_PERMISSION_DENIED: 'errPermissionDenied',
   ERR_CAMERA_UNAVAILABLE: 'errCameraUnavailable',
 };
@@ -258,12 +267,26 @@ function CameraAppScreen(): React.JSX.Element {
   currentFocalMmRef.current = currentFocalMm;
 
   // Photo Capture & Preview states
+  const [nativeCaptureState, setNativeCaptureState] = useState<CaptureState>({ ready: false, reason: 'unavailable' });
+  const nativeCaptureStateRef = useRef<CaptureState>({ ready: false, reason: 'unavailable' });
+  const [opticsPending, setOpticsPending] = useState(false);
+  const opticsPendingRef = useRef(false);
+  const configurationSeqRef = useRef(0);
+  const captureHandlerRef = useRef<() => void>(() => {});
+  const captureInFlightRef = useRef(false);
+  const [deliveryState, setDeliveryState] = useState<PhotoDeliveryState>({ processing: 0, waiting: 0, originals: 0, paused: false, originalSaved: 0 });
+  const opticsLeasesRef = useRef(new Set<string>());
+  const setOpticsBusy = useCallback((busy: boolean, owner = 'manual') => {
+    if (busy) opticsLeasesRef.current.add(owner);
+    else opticsLeasesRef.current.delete(owner);
+    const pending = opticsLeasesRef.current.size > 0;
+    opticsPendingRef.current = pending;
+    setOpticsPending(pending);
+  }, []);
   const [capturePhase, setCapturePhase] = useState<CapturePhase>('idle');
   const [latestThumbnail, setLatestThumbnail] = useState<string | null>(null);
-  // Full-resolution file of THIS session's last shot (temp file; not persisted). The
-  // photo viewer prefers it and falls back to the persisted 512px thumbnail after restart.
-  const [lastCaptureFileUri, setLastCaptureFileUri] = useState<string | null>(null);
-  const [photoViewerUri, setPhotoViewerUri] = useState<string | null>(null);
+  // Native viewer owns a pinned full-resolution snapshot until dismissal.
+  const photoViewerOpenRef = useRef(false);
   // Per-capture display copy of the thumbnail (RN Image caches by URI; the native
   // persisted path is stable, so without this the chip keeps showing the first shot).
   const chipFileRef = useRef<string | null>(null);
@@ -288,11 +311,11 @@ function CameraAppScreen(): React.JSX.Element {
   // The trial reservation owned by the capture in flight (shutter → saved photo).
   // Snapshot matches the profile that was active AT SHUTTER TIME, so switching
   // cameras mid-processing still commits to the right counter.
-  // Trial reservations in flight, FIFO: the native pipeline is a serial queue, so
-  // onPhotoProcessed events arrive in capture order and settle the OLDEST reservation.
-  // (A single slot broke under quick double-taps: capture 2's reserve overwrote
-  // capture 1's before capture 1's pipeline event settled.)
-  const pendingTrialQueueRef = useRef<Array<{ profileId: string; reservedAt: number }>>([]);
+  // Delayed final photos can complete out of order. Every reservation owns a
+  // capture ID; recovered/background/free shots never consume a different shot's slot.
+  const latestDeliveredCaptureAtRef = useRef(0);
+  const latestDeliveredCaptureIDRef = useRef<string | null>(null);
+  const pendingTrialQueueRef = useRef<Array<{ captureID: string; profileId: string; reservedAt: number }>>([]);
   // Subscription-stable refs for the photo-processed listener: the effect below must
   // NOT re-subscribe on every trial commit (remove + re-add races a native event
   // fired in between — the exact event the trial count depends on). Refs keep the
@@ -314,8 +337,8 @@ function CameraAppScreen(): React.JSX.Element {
     loadCameraState().then((state) => {
       if (!mounted) return;
       cameraStateRef.current = state;
-      // Restore the latest-shot chip: the thumbnail lives at a STABLE Documents path now.
-      if (state.lastThumbUri) setLatestThumbnail(state.lastThumbUri);
+      // Native latest.json is authoritative, including deletion tombstones.
+      // A cached JS thumbnail must never resurrect an already deleted photo.
       // Versioned onboarding gate: absent/older version = first launch (or a new
       // onboarding rev the user hasn't seen). Completing or skipping writes the version.
       if ((state.completedOnboardingVersion ?? 0) < CURRENT_ONBOARDING_VERSION) {
@@ -513,8 +536,7 @@ function CameraAppScreen(): React.JSX.Element {
         const engaged = stops.find((stop) => stop.mm === (currentFocalMmRef.current ?? defaultFocalStop().mm));
         if (engaged) {
           activeLensRef.current = engaged.lens;
-          await CameraEngine.setLens(engaged.lens);
-          await CameraEngine.setZoomFactor(engaged.zoom, engaged.mm);
+          await CameraEngine.setFocalStop(engaged.lens, engaged.zoom, engaged.mm);
         }
       } catch {
         // Single-lens fallbacks stay on the previous state.
@@ -542,6 +564,29 @@ function CameraAppScreen(): React.JSX.Element {
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const update = (state: CaptureState) => {
+      if (!mounted) return;
+      nativeCaptureStateRef.current = state;
+      setNativeCaptureState(state);
+    };
+    const stateSubscription = addCaptureStateListener(update);
+    const shutterSubscription = addShutterRequestedListener(() => captureHandlerRef.current());
+    const deliverySubscription = addPhotoDeliveryStateListener((state) => { if (mounted) setDeliveryState(state); });
+    CameraEngine.getCaptureState().then(update).catch(() => {});
+    CameraEngine.getPhotoDeliveryState().then((state) => {
+      if (mounted) { setDeliveryState(state); reconcileTrialReservations(state.captureIDs ?? []); }
+    }).catch(() => {});
+    CameraEngine.getLatestPhoto().then((photo) => {
+      if (!mounted || !photo || (photo.capturedAt ?? 0) < latestDeliveredCaptureAtRef.current) return;
+      latestDeliveredCaptureAtRef.current = photo.capturedAt ?? 0;
+      latestDeliveredCaptureIDRef.current = photo.captureID ?? null;
+      setLatestThumbnail(photo.previewDeleted ? null : photo.thumbnailUri ?? null);
+    }).catch(() => {});
+    return () => { mounted = false; stateSubscription.remove(); shutterSubscription.remove(); deliverySubscription.remove(); };
   }, []);
 
   // Permission probe on mount: never triggers the system dialog itself. When already
@@ -596,12 +641,11 @@ function CameraAppScreen(): React.JSX.Element {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active' || !cameraRunningRef.current) return;
       CameraEngine.startCamera()
-        .then(() => {
+        .then(async () => {
           setPermissionState('authorized');
           const engaged = focalStopsRef.current.find((stop) => stop.mm === currentFocalMmRef.current);
           if (engaged) {
-            CameraEngine.setLens(engaged.lens).catch(() => {});
-            CameraEngine.setZoomFactor(engaged.zoom, engaged.mm).catch(() => {});
+            await CameraEngine.setFocalStop(engaged.lens, engaged.zoom, engaged.mm);
           }
         })
         .catch((err: unknown) => {
@@ -643,11 +687,9 @@ function CameraAppScreen(): React.JSX.Element {
   // twice per tick. The native side additionally fingerprints the color payload, so a
   // re-applied unchanged profile no longer rebuilds the compiled color cube at all.
 
-  // Recommended-aperture default (product decision 2026-09-13): SELECTING a camera snaps
-  // the ring to that profile's aperture.preferred (e.g. Ricoh GR → ƒ/2.8); the user then
-  // adjusts from there. Guarded by profile id so the aperture-driven effectiveProfile
-  // re-renders never re-apply it mid-drag (the effect would otherwise fight the finger).
+  // Signature aperture is part of the selected camera's optical character.
   const preferredApertureProfileRef = useRef<string | null>(null);
+  const signatureApplySeqRef = useRef(0);
   // Which mock mode the diag menu forced (null = real hardware). The hardware-readback
   // sync after setAperture must NOT run in mock-variable: capabilities would report the
   // REAL lens's fixed 1.8 and snap the ring away from the chosen stop.
@@ -700,15 +742,18 @@ function CameraAppScreen(): React.JSX.Element {
     const min = apertureRange?.min ?? capabilitiesRef.current?.minAperture ?? preferred;
     const max = apertureRange?.max ?? capabilitiesRef.current?.maxAperture ?? preferred;
     const clamped = Math.min(Math.max(preferred, min), max);
+    preferredApertureProfileRef.current = profile.id;
+    const seq = ++signatureApplySeqRef.current;
+    const settleSeq = apertureSettleSeqRef.current;
     try {
       await CameraEngine.setAperture(clamped);
-      confirmedApertureRef.current = clamped;
+      if (seq !== signatureApplySeqRef.current || settleSeq !== apertureSettleSeqRef.current) return;
       if (apertureDraggingRef.current) return;
-      setCurrentAperture(clamped);
-      if (mockApertureModeRef.current === null) {
+      if (mockApertureModeRef.current !== 'mock-variable') {
         // Real variable hardware: the iris may settle on the nearest physical stop —
         // the UI shows the HARDWARE truth, not the request.
         const capabilities = await CameraEngine.getCapabilities();
+        if (seq !== signatureApplySeqRef.current || settleSeq !== apertureSettleSeqRef.current) return;
         const real = capabilities.activeAperture;
         if (typeof real === 'number' && Number.isFinite(real) && real > 0) {
           confirmedApertureRef.current = real;
@@ -716,23 +761,30 @@ function CameraAppScreen(): React.JSX.Element {
             setCurrentAperture(real);
           }
         }
+      } else {
+        confirmedApertureRef.current = clamped;
+        setCurrentAperture(clamped);
       }
     } catch (err: unknown) {
+      if (seq !== signatureApplySeqRef.current || settleSeq !== apertureSettleSeqRef.current) return;
+      preferredApertureProfileRef.current = null;
+      showTransientError(resolveErrorMessage(err));
       // Hardware refused — leave the ring where the user had it, journal the reason.
       recordDiag('warn', `signature aperture ${preferred} rejected: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [apertureRange]);
+  }, [apertureRange, showTransientError]);
 
   useEffect(() => {
     if (!isCameraRunning || !activeProfile) return;
-    if (preferredApertureProfileRef.current === activeProfile.id) return;
-    preferredApertureProfileRef.current = activeProfile.id;
-    // ORIG (passthrough) carries no signature aperture: switching to it must NOT touch
-    // the current real aperture state (user spec). A FIXED lens never applies the
-    // signature at all — the ring shows the lens's real mechanical aperture only.
-    if (activeProfile.id === 'negative_film') return;
-    if (apertureVariable) void applySignatureAperture(activeProfile);
-  }, [activeProfile, isCameraRunning, apertureVariable, apertureRange, applySignatureAperture]);
+    const seq = ++configurationSeqRef.current;
+    setOpticsBusy(true, 'profile');
+    const apply = async () => {
+      if (apertureVariable && !activeProfile.passthrough && preferredApertureProfileRef.current !== activeProfile.id) {
+        await applySignatureAperture(activeProfile);
+      } else if (activeProfile.passthrough) { preferredApertureProfileRef.current = activeProfile.id; }
+    };
+    void apply().finally(() => { if (seq === configurationSeqRef.current) setOpticsBusy(false, 'profile'); });
+  }, [activeProfile, isCameraRunning, apertureVariable, applySignatureAperture, setOpticsBusy]);
 
   // Native -> ApertureState sync: the Camera Control slider (and any native aperture
   // source) flows back here so the SCREEN RING always shows the same f-number. There is
@@ -777,22 +829,29 @@ function CameraAppScreen(): React.JSX.Element {
   useEffect(() => {
     const sub = addPhotoProcessedListener((event) => {
       // Trial bookkeeping (spec §3): ONLY a successfully SAVED photo consumes a
-      // free shot. Any pipeline failure rolls the reservation back — the count
-      // must survive failed captures untouched.
-      const pending = pendingTrialQueueRef.current.shift();
+      // free shot. Retained jobs keep their reservation until saved or explicitly
+      // stopped; terminal outcomes are acknowledged only after durable settlement.
+      const pending = settleCaptureReservation(pendingTrialQueueRef.current, event);
+      const trialProfile = pending?.profileId ?? event?.profileID;
+      const receiptID = event?.captureID;
+      const acknowledge = () => { if (event.jobID && event.terminal !== false) void CameraEngine.ackPhotoOutcome(event.jobID).catch(() => {}); };
       if (!event?.ok) {
         const code = String(event?.errorCode ?? 'unknown');
         recordDiag('error', `capture pipeline: FAILED (${code}): ${String(event?.detail ?? '')}`);
-        if (pending) {
-          rollbackTrialShotRef.current(pending.profileId);
-          recordDiag('info', `trial: rolled back reservation (${pending.profileId})`);
+        let settled = true;
+        if (trialProfile && receiptID && event.terminal !== false) {
+          settled = rollbackTrialShotRef.current(trialProfile, receiptID);
+          recordDiag('info', `trial: rolled back reservation (${trialProfile})`);
         }
+        if (settled) acknowledge();
         if (code === 'ERR_PHOTO_PERMISSION_DENIED') setPhotoPermDenied(true);
-        showTransientError(String(event?.detail ?? 'Photo save failed.'));
+        showTransientError(event.retained ? t(event.terminal === true ? 'photoRetainedStopped' : event.originalSaved ? 'photoOriginalSafe' : 'photoLocalSafe')
+          : resolveErrorMessage(new CameraEngineError(code as CameraEngineErrorCode, 'Photo processing failed.')));
         return;
       }
+      const settled = !trialProfile || !receiptID || commitTrialShotRef.current(trialProfile, receiptID);
+      if (settled) acknowledge();
       if (pending) {
-        commitTrialShotRef.current(pending.profileId);
         const remaining = TRIAL_LIMIT - (trialUsedRef.current[pending.profileId] ?? 0) - 1;
         recordDiag('info', `trial: committed (${pending.profileId}, remaining=${remaining})`);
         // The 3rd (last) free shot just saved: a LIGHT, non-blocking hint — the
@@ -803,12 +862,17 @@ function CameraAppScreen(): React.JSX.Element {
           trialHintTimerRef.current = setTimeout(() => setTrialHintVisible(false), 6000);
         }
       }
+      setPhotoPermDenied(false);
       if (event.processingFallback) {
         showTransientError(t('dnaFallbackSaved'));
       }
       recordDiag('info', `capture pipeline: saved (thumb=${Boolean(event.thumbnailUri)}, codec=${event.codec ?? '?'}, eq=${event.equivalentFocal ?? '?'}mm)`);
-      if (event.fileUri) setLastCaptureFileUri(event.fileUri);
-      const thumbUri = event.thumbnailUri ?? event.fileUri ?? null;
+      if (event.previewDeleted) return; // Trial settlement above still completes exactly once.
+      const capturedAt = event.capturedAt ?? 0;
+      if (capturedAt < latestDeliveredCaptureAtRef.current) return;
+      latestDeliveredCaptureAtRef.current = capturedAt;
+      latestDeliveredCaptureIDRef.current = event.captureID ?? null;
+      const thumbUri = event.thumbnailUri ?? null;
       if (thumbUri) {
         // RN Image caches by URI: the native persisted thumbnail path is STABLE, so the
         // chip would keep showing the first shot's bitmap. Copy to a per-capture display
@@ -879,6 +943,7 @@ function CameraAppScreen(): React.JSX.Element {
     // (2-dec display precision) did not change.
     setCurrentAperture((prev) => (Math.abs(prev - aperture) < 0.005 ? prev : aperture));
     // Real hardware only (apertureVariable implies it): live coalesced preview.
+    setOpticsBusy(true);
     CameraEngine.setApertureCoalesced(aperture).catch(() => {});
   };
 
@@ -900,11 +965,13 @@ function CameraAppScreen(): React.JSX.Element {
     const max = apertureRange?.max ?? capabilitiesRef.current?.maxAperture ?? aperture;
     const clamped = Math.min(Math.max(aperture, min), max);
     const seq = ++apertureSettleSeqRef.current;
+    setOpticsBusy(true);
     CameraEngine.setAperture(clamped)
-      .then(() => {
-        confirmedApertureRef.current = clamped;
+      .then(async () => {
+        const actual = mockApertureModeRef.current === 'mock-variable' ? clamped : (await CameraEngine.getCapabilities()).activeAperture;
         if (seq !== apertureSettleSeqRef.current || apertureDraggingRef.current) return;
-        setCurrentAperture(clamped);
+        confirmedApertureRef.current = actual;
+        setCurrentAperture(actual);
       })
       .catch((err: unknown) => {
         if (seq !== apertureSettleSeqRef.current) return;
@@ -920,32 +987,30 @@ function CameraAppScreen(): React.JSX.Element {
           recordDiag('warn', 'aperture: hardware rejected setAperture — demoted to fixed + DEMO for this session');
         }
         showTransientError(resolveErrorMessage(err));
-      });
+      }).finally(() => { if (seq === apertureSettleSeqRef.current) setOpticsBusy(false); });
   };
 
   /**
-   * Focal-stop selection — PHYSICAL LENS ROUTING: 26/35/52 stay on the physical main
-   * (zoom-only move, no input churn — the main's real variable iris serves all three);
-   * 13mm/Tele swap the physical input natively (setLens). After ANY switch the aperture
-   * capability is re-queried: 13mm/Tele are honest FIXED lenses, so the ring must drop
-   * out of variable mode when one of them is active.
+   * One native focal transaction applies input + zoom, or rolls back on failure.
+   * Apple virtual routing stays the default; recommended/manual real aperture binds
+   * the physical main camera. Re-query capability after every change.
    */
   const handleSelectFocal = useCallback(async (stop: FocalStop) => {
+    if (captureInFlightRef.current) return;
+    setOpticsBusy(true, 'focal');
     const seq = ++focalSelectSeqRef.current;
     const superseded = () => seq !== focalSelectSeqRef.current;
     const previousMm = currentFocalMm;
     const previousLens = activeLensRef.current;
     try {
       recordDiag('info', `focal: select ${stop.mm}mm lens=${stop.lens} (zoom=${stop.zoom}) from ${previousMm}mm`);
-      await CameraEngine.setLens(stop.lens);
+      await CameraEngine.setFocalStop(stop.lens, stop.zoom, stop.mm);
       // A newer dial selection superseded this one — abandon WITHOUT writing any
       // state; the winner's own writes land when its awaits resolve.
       if (superseded()) {
         recordDiag('info', `focal: select ${stop.mm}mm superseded — abandoned`);
         return;
       }
-      await CameraEngine.setZoomFactor(stop.zoom, stop.mm);
-      if (superseded()) return;
       activeLensRef.current = stop.lens;
       recordDiag('info', `focal: lens=${stop.lens} zoom ${stop.zoom} applied`);
       setCurrentFocalMm(stop.mm);
@@ -961,11 +1026,8 @@ function CameraAppScreen(): React.JSX.Element {
           min: capabilities.minAperture ?? 1.48,
           max: capabilities.maxAperture ?? 4,
         });
-        // FIXED → VARIABLE lens switch (13mm/Tele → Wide): the current profile's
-        // signature aperture becomes REAL again — apply it (spec §1). Wide→Wide
-        // (26/35/52) never reaches the input swap, so the user's aperture survives.
-        if (previousLens !== 'wide' && stop.lens === 'wide' && activeProfile && activeProfile.id !== 'negative_film') {
-          void applySignatureAperture(activeProfile);
+        if (previousLens !== 'wide' && stop.lens === 'wide' && activeProfile && !activeProfile.passthrough) {
+          await applySignatureAperture(activeProfile);
         }
       } else {
         setApertureRange(null);
@@ -979,13 +1041,16 @@ function CameraAppScreen(): React.JSX.Element {
       if (superseded()) return;
       recordDiag('error', `focal: select ${stop.mm}mm FAILED: ${err instanceof Error ? err.message : String(err)}`);
       // Never leave the dial claiming a focal the optics did not reach.
-      if (previousMm != null) setCurrentFocalMm(previousMm);
+      const actual = await CameraEngine.getCaptureState().catch(() => null);
+      if (actual?.equivalentFocal) setCurrentFocalMm(actual.equivalentFocal);
+      else if (previousMm != null) setCurrentFocalMm(previousMm);
       showTransientError(resolveErrorMessage(err));
-    }
-  }, [currentFocalMm, showTransientError, activeProfile, applySignatureAperture]);
+    } finally { if (seq === focalSelectSeqRef.current) setOpticsBusy(false, 'focal'); }
+  }, [currentFocalMm, showTransientError, activeProfile, applySignatureAperture, setOpticsBusy]);
 
   const handleCapturePhoto = async () => {
-    if (capturePhase === 'capturing') return;
+    if (isSelectorOpen || isCalibrationOpen || isRadialOpen || showOnboarding || photoViewerOpenRef.current || paywall) return;
+    if (!canRequestCapture(nativeCaptureStateRef.current, opticsPendingRef.current, captureInFlightRef.current)) return;
 
     // -------------------------------------------------------------
     // Monetization gate (spec §5/§6/§27): runs entirely BEFORE the capture, from
@@ -994,8 +1059,9 @@ function CameraAppScreen(): React.JSX.Element {
     // -------------------------------------------------------------
     const gateProfile = activeProfile;
     // THIS press's own reservation — the catch path rolls back exactly this one,
-    // never a newer capture's (FIFO queue + per-capture handle).
-    let trialReservation: { profileId: string; reservedAt: number } | null = null;
+    // never a newer capture's reservation.
+    const captureID = `capture-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let trialReservation: { captureID: string; profileId: string; reservedAt: number } | null = null;
     if (gateProfile) {
       const access = accessFor(gateProfile.id, isPro, trialUsed, gateProfile);
       if (access.kind === 'requiresPro') {
@@ -1007,31 +1073,39 @@ function CameraAppScreen(): React.JSX.Element {
         return;
       }
       if (access.kind === 'trial') {
-        // A stale reservation (timeout with no pipeline event ever arriving) must
-        // not eat slots forever: the 20s capture timeout + margin covers it.
         const now = Date.now();
-        const stale = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt > 30_000);
-        if (stale.length > 0) {
-          pendingTrialQueueRef.current = pendingTrialQueueRef.current.filter((r) => now - r.reservedAt <= 30_000);
-          stale.forEach((r) => rollbackTrialShot(r.profileId));
-        }
-        const reserved = reserveTrialShot(gateProfile.id);
+        const reserved = reserveTrialShot(gateProfile.id, captureID);
         if (!reserved) {
-          // Rapid taps raced the last slot — same intent as exhausted.
-          recordDiag('info', `trial: reservation refused (${gateProfile.id}) → paywall`);
-          setPaywall({ source: 'trialExhausted', profileId: gateProfile.id });
+          // Pending processing can reserve the remaining slot without exhausting it.
+          recordDiag('info', `trial: reservation busy (${gateProfile.id})`);
+          showTransientError(t('errCaptureBusy'));
           return;
         }
-        trialReservation = { profileId: gateProfile.id, reservedAt: now };
+        trialReservation = { captureID, profileId: gateProfile.id, reservedAt: now };
         pendingTrialQueueRef.current.push(trialReservation);
       }
     }
 
+    captureInFlightRef.current = true;
     setCapturePhase('capturing');
 
-    // Immediate shutter feedback: white flash + haptic fire on press, while the photo
-    // processes in the background. Preview never blocks.
-    Animated.sequence([
+    let timeoutId: NodeJS.Timeout | null = null;
+    try {
+      // SHUTTER DECOUPLING (spec §6): the promise settles when APPLE'S CAPTURE is done.
+      // Camera DNA + HEIF + PhotoKit continue in the background on the serial native
+      // processing queue and report via onPhotoProcessed — they never hold the shutter.
+      const currentStop = focalStopsRef.current.find((stop) => stop.mm === currentFocalMmRef.current);
+      const result: CapturedPhoto | undefined = await Promise.race([
+        CameraEngine.capturePhoto(currentStop?.mm ?? 0, captureID, (effectiveProfile ?? {}) as Record<string, unknown>),
+        new Promise<never>((_resolve, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error('Capture timed out. The photo may still reach your library.')),
+            CAPTURE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      // Exposure is confirmed. Flash denotes a real photo, not merely a button press.
+      Animated.sequence([
       Animated.timing(shutterFlashAnim, {
         toValue: 1,
         duration: 45,
@@ -1044,25 +1118,9 @@ function CameraAppScreen(): React.JSX.Element {
       }),
     ]).start();
 
-    let timeoutId: NodeJS.Timeout | null = null;
-    try {
-      // SHUTTER DECOUPLING (spec §6): the promise settles when APPLE'S CAPTURE is done.
-      // Camera DNA + HEIF + PhotoKit continue in the background on the serial native
-      // processing queue and report via onPhotoProcessed — they never hold the shutter.
-      const currentStop = focalStopsRef.current.find((stop) => stop.mm === currentFocalMmRef.current);
-      const result: CapturedPhoto | undefined = await Promise.race([
-        CameraEngine.capturePhoto(currentStop?.mm ?? 0),
-        new Promise<never>((_resolve, reject) => {
-          timeoutId = setTimeout(
-            () => reject(new Error('Capture timed out. The photo may still reach your library.')),
-            CAPTURE_TIMEOUT_MS,
-          );
-        }),
-      ]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       // Shutter unlocked HERE — the thumbnail chip arrives via onPhotoProcessed.
       setCapturePhase('idle');
-      setPhotoPermDenied(false);
       recordDiag('info', `capture: Apple capture complete (zoom=${result?.appliedZoom?.toFixed(2) ?? '?'} → ${result?.equivalentFocal ?? currentStop?.mm ?? '?'}mm eq); Camera DNA/HEIF/PhotoKit continue in background`);
     } catch (err: unknown) {
       const code = err instanceof CameraEngineError ? err.code : 'unknown';
@@ -1073,8 +1131,10 @@ function CameraAppScreen(): React.JSX.Element {
       // in onPhotoProcessed, which is the only place that commits or rolls back.
       if (!timedOut && trialReservation) {
         const idx = pendingTrialQueueRef.current.indexOf(trialReservation);
-        if (idx >= 0) pendingTrialQueueRef.current.splice(idx, 1);
-        rollbackTrialShot(trialReservation.profileId);
+        if (idx >= 0) {
+          pendingTrialQueueRef.current.splice(idx, 1);
+          rollbackTrialShot(trialReservation.profileId, captureID);
+        }
       }
       // A denied add-only photo permission is easy to miss as a 4s banner and reads as
       // "photos don't save" — surface it as a persistent, tappable remediation pill.
@@ -1084,9 +1144,11 @@ function CameraAppScreen(): React.JSX.Element {
       // The failure state decays; the shutter is immediately usable again.
       setTimeout(() => setCapturePhase((phase) => (phase === 'failed' ? 'idle' : phase)), 2500);
     } finally {
+      captureInFlightRef.current = false;
       if (timeoutId) clearTimeout(timeoutId);
     }
   };
+  captureHandlerRef.current = () => { void handleCapturePhoto(); };
 
   // -------------------------------------------------------------
   // 9. Viewfinder Long-Press & Radial Gesture Responder
@@ -1135,13 +1197,15 @@ function CameraAppScreen(): React.JSX.Element {
 
   const handleSelectProfile = useCallback(
     (profile: CameraProfile) => {
+      if (captureInFlightRef.current) return;
+      if (profile.id !== currentProfileId) setOpticsBusy(true, 'profile');
       const ok = selectProfile(profile.id);
       if (ok) {
         cameraStateRef.current.lastProfileId = profile.id;
         saveCameraState({ lastProfileId: profile.id });
       }
     },
-    [selectProfile]
+    [selectProfile, currentProfileId, setOpticsBusy]
   );
 
   // The single Pro entry point. Already-subscribed users skip the paywall entirely
@@ -1462,6 +1526,27 @@ function CameraAppScreen(): React.JSX.Element {
             </View>
           )}
 
+          {isCameraRunning && !permissionOverlayVisible && (
+            <View style={{ position: 'absolute', top: 105, alignSelf: 'center', zIndex: 20 }}>
+              <TouchableOpacity accessibilityRole="button" onPress={() => {
+                  if (nativeCaptureState.reason === 'unavailable') { void initializeCameraSession(); }
+                  else if (nativeCaptureState.reason === 'aperture' && nativeCaptureState.apertureTarget != null) {
+                    setOpticsBusy(true, 'retry');
+                    void CameraEngine.setAperture(nativeCaptureState.apertureTarget).catch((error: unknown) => showTransientError(resolveErrorMessage(error))).finally(() => setOpticsBusy(false, 'retry'));
+                  } else { void CameraEngine.showPhotoRecovery().catch(() => showTransientError(t('errGeneric'))); }
+                }}
+                style={{ backgroundColor: '#111C', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 8 }}>
+                <Text style={{ color: '#FFF', fontSize: 12 }}>
+                  {nativeCaptureState.reason === 'unavailable' ? t('retryCamera')
+                    : nativeCaptureState.reason === 'aperture' ? t('errApertureNotReady')
+                    : deliveryState.waiting > 0 || deliveryState.paused ? `${t('photosWaiting')} ${deliveryState.waiting || deliveryState.processing}`
+                    : deliveryState.processing > 0 ? `${t('photosFinishing')} ${deliveryState.processing}`
+                    : opticsPending || nativeCaptureState.reason === 'optics' ? t('cameraPreparing') : t('photoStatus')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Photo-saving remediation pill: persistent until a capture succeeds. */}
           {photoPermDenied && isCameraRunning && !permissionOverlayVisible && (
             <View style={styles.photoPermContainer} pointerEvents="box-none">
@@ -1558,20 +1643,28 @@ function CameraAppScreen(): React.JSX.Element {
                     <ThumbnailPreview
                       uri={latestThumbnail}
                       onPress={() => {
-                        // In-app full-screen viewer (the system camera's own pattern).
-                        // iOS exposes no public way to open the Photos app from a
-                        // third-party app — photos-redirect:// is semi-private and fails
-                        // outright on current iOS. Prefer this session's full-res temp
-                        // file; fall back to the persisted 512px thumbnail.
-                        let uri = lastCaptureFileUri;
-                        if (uri) {
-                          try {
-                            if (!new File(uri).exists) uri = null;
-                          } catch {
-                            uri = null;
+                        if (photoViewerOpenRef.current) return;
+                        photoViewerOpenRef.current = true;
+                        const names = Object.fromEntries(profiles.map((profile) => [profile.id, profile.displayName ?? profile.name]));
+                        void CameraEngine.showLatestPhoto(names).then(async (result) => {
+                          if (!result.deleted) return;
+                          if (result.captureID === latestDeliveredCaptureIDRef.current) {
+                            setLatestThumbnail(null);
+                            cameraStateRef.current.lastThumbUri = null;
+                            saveCameraState({ lastThumbUri: null });
                           }
-                        }
-                        setPhotoViewerUri(uri ?? latestThumbnail);
+                          const latest = await CameraEngine.getLatestPhoto();
+                          if (latest && ((latest.capturedAt ?? 0) > latestDeliveredCaptureAtRef.current
+                            || (latest.previewDeleted && (latest.capturedAt ?? 0) === latestDeliveredCaptureAtRef.current))) {
+                            latestDeliveredCaptureAtRef.current = latest.capturedAt ?? 0;
+                            latestDeliveredCaptureIDRef.current = latest.captureID ?? null;
+                            const thumbnail = latest.previewDeleted ? null : latest.thumbnailUri ?? null;
+                            setLatestThumbnail(thumbnail);
+                            cameraStateRef.current.lastThumbUri = thumbnail;
+                            saveCameraState({ lastThumbUri: thumbnail });
+                          }
+                        }).catch(() => showTransientError(t('photoUnavailable')))
+                          .finally(() => { photoViewerOpenRef.current = false; });
                       }}
                     />
                   ) : null}
@@ -1581,6 +1674,7 @@ function CameraAppScreen(): React.JSX.Element {
                 <View style={styles.shutterSlot}>
                   <ShutterButton
                     isCapturing={capturePhase === 'capturing'}
+                    disabled={!canRequestCapture(nativeCaptureState, opticsPending, capturePhase === 'capturing')}
                     accent={skin.accent}
                     onPress={handleCapturePhoto}
                   />
@@ -1638,49 +1732,6 @@ function CameraAppScreen(): React.JSX.Element {
             apertureSideView={apertureSideView}
             onToggleApertureSideView={() => setApertureSideView((enabled) => !enabled)}
           />
-
-          {/* Full-screen photo viewer: tap the thumbnail to inspect the last shot.
-              The "open in Photos" action is best-effort — photos-redirect:// is
-              semi-private and refuses on some iOS versions; the photo itself is
-              already saved to the library either way. */}
-          <Modal
-            animationType="fade"
-            onRequestClose={() => setPhotoViewerUri(null)}
-            transparent
-            visible={photoViewerUri !== null}
-          >
-            <TouchableOpacity
-              accessibilityLabel="Close photo viewer"
-              accessibilityRole="button"
-              activeOpacity={1}
-              onPress={() => setPhotoViewerUri(null)}
-              style={styles.photoViewer}
-            >
-              {photoViewerUri ? (
-                <Image
-                  resizeMode="contain"
-                  source={{ uri: photoViewerUri }}
-                  style={styles.photoViewerImage}
-                />
-              ) : null}
-            </TouchableOpacity>
-            {photoViewerUri ? (
-              <View pointerEvents="box-none" style={styles.photoViewerActions}>
-                <TouchableOpacity
-                  accessibilityLabel="Open in the Photos app"
-                  accessibilityRole="button"
-                  style={styles.photoViewerButton}
-                  onPress={() => {
-                    Linking.openURL('photos-redirect://').catch(() => {
-                      showTransientError(t('photosRedirectFail'));
-                    });
-                  }}
-                >
-                  <Text style={styles.photoViewerButtonText}>{t('openInPhotos')}</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-          </Modal>
 
           {/* First-launch onboarding (3 pages; no paywall afterwards by design). */}
           <OnboardingView
@@ -1888,35 +1939,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flexShrink: 1,
     textAlign: 'center',
-  },
-  photoViewer: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.96)',
-  },
-  photoViewerImage: {
-    flex: 1,
-    marginTop: 48,
-    marginBottom: 48,
-  },
-  photoViewerActions: {
-    position: 'absolute',
-    bottom: 56,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  photoViewerButton: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    backgroundColor: 'rgba(30, 30, 34, 0.85)',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-  },
-  photoViewerButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
   },
   ultraWideNote: {
     height: 96,

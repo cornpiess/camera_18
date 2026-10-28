@@ -2,26 +2,43 @@
 
 当前方案（2026-10-27）：经典相机色彩／影调模拟 + 真实光圈控制。用户仍只控制相机、光圈、后置焦段。
 
+## 2026-10-28 拍摄状态与照片交付闭环（最新）
+
+本节对应用户批准执行的产品问题修复，优先于历史挂起清单；不改变三张试拍政策，也不取消相机推荐真实光圈联动。
+
+- 原生采集状态统一表达不可用、曝光中、光学调整中、光圈未到位、处理繁忙、可拍。屏幕和硬件快门走相同 JS 权限/试拍入口，原生再次校验；快门配方随请求冻结。
+- 光圈完成回调和3秒兜底均检查硬件回读，超时不自动算成功；失败阻止拍摄并提供重试。拖动请求在 sessionQueue 合并，被取代的请求也正常结束；旧回调不能覆写新光圈状态。
+- 焦段 input + zoom 在统一禁拍窗内执行，失败恢复原镜头/变焦/原有真实光圈；恢复失败进入不可用态并提供重建入口。旧事务不能回滚新事务。
+- 失败照片保留任务/源，不再被误报为已交付或释放仍在恢复中的试拍名额。照片状态入口提供一次性重试、系统设置、可解码原图导出及明确确认后的本地原图清理；直接底片的失败任务可保留原图并结束等待，代理任务必须继续最终化。
+- 有限后台任务用于争取保存时间，到期暂停并保留日志；不承诺杀进程后继续执行。失败任务不占8个活动任务名额，但仍占磁盘，原图存储由用户显式管理。
+- 完整分辨率最新照片保留在 Application Support/Camera18Latest，重开可放大查看，缩略图只用于入口。恢复旧照片不会倒退最新照片记录。
+- Keychain 按 captureID 持久化预留/提交状态。完成结果先写 Camera18Outcomes，再清理任务、发事件；JS 结算成功后 ACK，未ACK结果在恢复时重放。重复回调幂等，未知ID不消费其他名额；启动只释放上一进程中无任务/结果的孤立预留。
+
+验证分层：JS/离线回归和 prepackage 是静态门槛；Swift 类型、Photos权限/事务、后台到期、硬件光圈与UI交互仍待 CI / 对应设备工程验收。不能据此宣称已通过真机或画质验收。
+
 ## 运行架构
 
 | 层 | 职责 | 实现 |
 |---|---|---|
 | UI／配置 | 选择相机、状态、配方验证与 override | Expo / React Native / TypeScript |
-| 采集 | 真实镜头路由、AF/AE/AWB、真实光圈、快门 | CameraEngineModule.swift / AVFoundation |
+| 采集 | 苹果多摄路由、AF/AE/AWB、主动真实光圈、快门 | CameraEngineModule.swift / AVFoundation |
 | 输入适配 | 技术输入差异，独立于相机风格 | CameraInputNormalizer；未实测时 identity |
 | 相机响应 | 统一颜色／影调／可选质感 | CameraProfileRenderer.swift + JSON/LUT |
-| 输出 | MTKView 预览；后台编码及 PhotoKit 保存 | 共用一个 CameraEngineGPU.ciContext |
+| 输出 | MTKView预览；最终底片获取、持久任务、同资产风格编辑 | CameraPhotoStore.swift；共享CIContext |
 
 不新增按品牌分支、不加用户手动曝光／滤镜强度、不做软件虚化或在线 AI。
 
 ## 采集不变量
 
-- AVCaptureSession .photo；input 始终物理镜头。
-- 13mm → UltraWide；26/35/52 → 同一 Wide，仅改 videoZoomFactor；Tele → 物理 Telephoto。缺镜头即隐藏。
-- 换 input 统一重建参数；crossfade、禁拍窗和 2.5s watchdog 保留。
-- Aperture Manual / Shutter AUTO / ISO AUTO / AF·AWB AUTO；缺真实能力则诚实报告 fixed。
-- processed JPEG 源；balanced，快拍能力门控，Deferred Delivery 关闭。
-- capture 完成即结算快门 promise，后处理走串行 processingQueue，结果经 onPhotoProcessed 回 JS。
+- `.photo` + `.quality`，默认苹果多摄自动选择；推荐光圈或主动真实光圈控制时约束主摄，焦段表示构图意图。
+- 支持时24MP延迟交付，否则直接高质量12MP；HEIF优先，不为像素数量默认选48MP。
+- 支持的ZSL/Responsive开启，Fast Capture Prioritization关闭；统一资源预热。
+- 切相机自动应用推荐真实光圈（按能力与硬件范围夹取），用户仍可手动调整；AF/AE/AWB自动，曝光和光圈以成片EXIF为准。
+- 曝光结束即释放快门，代理只能入库，最终底片才可渲染。PhotoKit非破坏性编辑保持一个相册资产。
+- 源/代理、配方、资产ID与错误持久化；恢复幂等；结果按captureID配对。
+- 无读取权限：直接质量底片→同源风格→单图入库，原始底片/配方保留本地。
+
+具体生命周期、边界和工程验收见 [高画质采集架构](docs/高画质采集架构.md)。
 
 ## 唯一渲染实现
 

@@ -1,7 +1,14 @@
 {
-  "platforms": ["apple"],
+  "platforms": [
+    "apple"
+  ],
   "apple": {
-    "modules": ["CameraEngineModule"],
-    "podspecPath": "CameraEngine.podspec"
+    "modules": [
+      "CameraEngineModule"
+    ],
+    "podspecPath": "CameraEngine.podspec",
+    "appDelegateSubscribers": [
+      "CameraOrientationSubscriber"
+    ]
   }
 }

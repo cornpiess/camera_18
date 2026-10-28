@@ -32,9 +32,9 @@ export interface MonetizationContextValue {
   readonly trialUsed: Record<string, number>;
   purchase(productId: string): Promise<PurchaseOutcome>;
   restorePurchases(): Promise<RestoreOutcome>;
-  reserveTrialShot(profileId: string): boolean;
-  commitTrialShot(profileId: string): void;
-  rollbackTrialShot(profileId: string): void;
+  reserveTrialShot(profileId: string, captureID: string): boolean;
+  commitTrialShot(profileId: string, captureID: string): boolean;
+  rollbackTrialShot(profileId: string, captureID: string): boolean;
   refreshTrialState(): void;
 }
 
@@ -99,16 +99,18 @@ export const MonetizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       trialUsed,
       purchase: nativePurchase,
       restorePurchases: nativeRestore,
-      reserveTrialShot: (profileId: string) => nativeReserve(profileId),
+      reserveTrialShot: (profileId: string, captureID: string) => nativeReserve(profileId, captureID),
       // After a commit the badge must drop to the new remaining count immediately;
       // rollbacks only matter when a reservation existed (no visible change).
-      commitTrialShot: (profileId: string) => {
-        commitTrialShot(profileId);
+      commitTrialShot: (profileId: string, captureID: string) => {
+        const settled = commitTrialShot(profileId, captureID);
         refreshTrialState();
+        return settled;
       },
-      rollbackTrialShot: (profileId: string) => {
-        nativeRollback(profileId);
+      rollbackTrialShot: (profileId: string, captureID: string) => {
+        const settled = nativeRollback(profileId, captureID);
         refreshTrialState();
+        return settled;
       },
       refreshTrialState,
     }),

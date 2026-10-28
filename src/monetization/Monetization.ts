@@ -34,9 +34,10 @@ type NativeMonetization = {
   restorePurchases(): Promise<Record<string, unknown>>;
   showManageSubscriptions(): Promise<void>;
   getTrialUsedShots(): Record<string, number>;
-  reserveTrialShot(profileID: string): boolean;
-  commitTrialShot(profileID: string): void;
-  rollbackTrialShot(profileID: string): void;
+  reserveTrialShot(profileID: string, captureID: string): boolean;
+  commitTrialShot(profileID: string, captureID: string): boolean;
+  rollbackTrialShot(profileID: string, captureID: string): boolean;
+  reconcileTrialReservations(captureIDs: string[]): void;
   resetTrials(): boolean;
   addListener(event: string, cb: (event: unknown) => void): { remove: () => void };
 };
@@ -129,31 +130,30 @@ export function getTrialUsedShots(): Record<string, number> {
   }
 }
 
-export function reserveTrialShot(profileID: string): boolean {
+export function reserveTrialShot(profileID: string, captureID: string): boolean {
   if (!native || !MONETIZATION_ENABLED) return true;
   try {
-    return native.reserveTrialShot(profileID);
+    return native.reserveTrialShot(profileID, captureID);
   } catch {
     return true;
   }
 }
 
-export function commitTrialShot(profileID: string): void {
-  if (!native || !MONETIZATION_ENABLED) return;
-  try {
-    native.commitTrialShot(profileID);
-  } catch {
-    // Best-effort: a lost commit only means one extra free shot — never block saving.
-  }
+export function commitTrialShot(profileID: string, captureID: string): boolean {
+  if (!native || !MONETIZATION_ENABLED) return true;
+  try { return native.commitTrialShot(profileID, captureID); }
+  catch { return false; } // Keep the durable outcome for the next recovery pass.
 }
 
-export function rollbackTrialShot(profileID: string): void {
+export function rollbackTrialShot(profileID: string, captureID: string): boolean {
+  if (!native || !MONETIZATION_ENABLED) return true;
+  try { return native.rollbackTrialShot(profileID, captureID); }
+  catch { return false; }
+}
+
+export function reconcileTrialReservations(captureIDs: string[]): void {
   if (!native || !MONETIZATION_ENABLED) return;
-  try {
-    native.rollbackTrialShot(profileID);
-  } catch {
-    // Same leniency as commit.
-  }
+  try { native.reconcileTrialReservations(captureIDs); } catch { /* Older native side. */ }
 }
 
 /** TESTING BUILDS ONLY (native DEBUG/CAMERA18_TESTING gate compiles this out in production). */

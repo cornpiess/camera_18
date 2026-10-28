@@ -157,16 +157,21 @@ node -e "const Y=require('yaml'),fs=require('fs');for(const f of ['.github/workf
 
 **用户只控制三件事**：相机型号（8 个 Profile）+ 光圈 f-stop + 后置镜头档位。其余（AF / AE / ISO / 快门 / AWB / 防抖）全自动。
 
-**相机模拟架构（用户定稿，禁止偏离；2026-09-17 起 = 物理镜头路由）**：
-- **物理镜头路由**：capture input 永远是物理镜头——13mm→UltraWide、26/35/52mm→Wide（单一主摄，只动 `videoZoomFactor`，**不换 input、不重置光圈**）、Tele→Telephoto；无对应物理镜头的档位隐藏。**禁止改回 virtual triple/dual capture input**（virtual 设备只许读 tele 倍数做 inventory）。换 input 必走 `configureForCurrentPhysicalCamera` 统一重建：maxPhotoDimensions / 快拍三件套 / 光圈能力全部按**新镜头** activeFormat 重读，严禁沿用旧镜头缓存。
-- 预览：`AVCaptureVideoDataOutput → CIImage → CameraDNARenderer(.preview) → MTKView`（MetalKit 显示，无自定义 shader）；镜头切换的 crossfade + `lensSwitching` 禁拍窗 + 2.5s watchdog 三件套不可拆
-- 曝光模型：**Aperture Manual / Shutter AUTO / ISO AUTO / AF·AWB AUTO**——光圈走 `setExposureModeCustom(lensAperture:duration:iso:)` + `autoExposureDuration/autoISO` 哨兵；sentinel 获取失败诚实报 `ERR_APERTURE_UNSUPPORTED`；**禁止** currentExposureDuration/currentISO/固定快门/固定 ISO/软件曝光补偿/`activeMaxExposureDuration` 限制
-- 成片：`AVCapturePhotoOutput → CIImage → 同一 CameraDNARenderer(.final) → HEIF 0.95`；`photoQualityPrioritization = .balanced`；Responsive/ZSL/Fast Capture 三件套 capability 门控；Deferred Delivery 关闭；**快门 promise 在 Apple capture 完成即返回**，后处理走串行 processingQueue + `onPhotoProcessed` 事件
-- ORIG：profile JSON `"passthrough": true` → Apple 原图 bytes 原样落盘，零渲染、零二次编码
-- 共享阶段：LUT（.cube，`Camera18_LUT_V0` 包）、曝光、色彩、色调、对比、暗角
-- 共享颜色阶段包含 deharsh（2026-10-27 用户批准统一预览／成片）；可选颗粒仅成片，当前内置默认零。halation/detail/raw 参数不在生产路径执行。
-- 渲染器唯一实现：`CameraProfileRenderer.swift`（应用与 macOS 校准工具同源）；不得恢复网页独立滤镜。校准流程见 `docs/相机校准流程.md`。
-- 禁止：RN 侧逐帧图像处理、独立预览滤镜实现、AI、V1 自定义 Metal shader
+**相机模拟架构（2026-10-27 用户批准：苹果高质量底片 + 统一相机风格）**：
+- 本节取代历史的物理镜头强制路由、balanced、关闭 Deferred 的约定。
+- 默认虚拟后置多摄自动路由；焦段表达构图意图。物理镜头用于单摄回退及相机推荐光圈或用户真实主摄光圈控制；换 input 保留 crossfade、禁拍窗、2.5s watchdog 和统一重建。
+- `.photo` + 输出/单次 `.quality`；HEIF 源优先。支持延迟交付且有照片读取权限时请求24MP；否则高质量12MP（不默认追求最大像素）。实际分辨率由系统决定。
+- 开启支持的 Deferred / ZSL / Responsive；Fast Capture Prioritization 关闭。资源预热与内存上限保障响应，不为连拍自动降质。
+- 相机的推荐光圈是产品核心：切换Profile在真实可变光圈能力范围内自动应用推荐值，固定镜头不伪造，用户可继续手动调整；切回主摄恢复该相机推荐值。快门/ISO保持自动；不伪造曝光/光圈EXIF，不用 speed 换取手动参数表面生效。
+- `didCapturePhotoFor` 结束快门 promise；代理照片只能以 `.photoProxy` 入库，禁止直接渲染。`CameraPhotoStore.swift` 获取 Apple 最终图后共享渲染，保存为同一资产的非破坏性编辑 + 配方，ORIG 不渲染。
+- 读取权限拒绝时使用直接交付质量底片，同源风格渲染后单图入库；干净原始底片和配方保留本地。无读取权限不能承诺 Photos 内撤销风格。
+- 所有后台结果按 captureID 配对，禁止 FIFO 结算。持久化源/代理、配方、资产ID、任务错误；重启/前台恢复仅重试一遍，不能轮询。已创建资产不得盲目重复创建。
+- 色彩/风格唯一实现 `CameraProfileRenderer.swift`，应用与 macOS 校准工具共用；禁止品牌分支、独立网页滤镜、假虚化、在线AI。内置默认零额外颗粒。
+- 2026-10-28：屏幕/硬件快门共用门禁，原生再次检查统一采集状态；光圈超时必须回读，不能乐观成功。input/zoom事务失败回滚，旧事务不得干扰新选择。
+- 试拍按captureID持久化预留/提交，成功结果用持久outbox重放，结算持久化成功才ACK；可恢复失败保留预留，不能重复扣或放掉另一张的名额。
+- 完整分辨率最近照片跨启动保留；缩略图不能充当大图。有限后台任务到期保留日志，原图仅由用户显式管理，失败任务可重试/导出。
+- 2026-10-28：单张查看器使用CameraPhotoViewer原生UIScrollView及固定全尺寸快照；分享不重编码，信息读实际EXIF。删除必须Photos成功才移除对应预览，删除时间高水位与outbox结算保留。CameraOrientationSubscriber仅在viewer存在时开放横屏，其余页面仍竖屏；不得全局解除拍摄方向约束。
+- 技术方案、边界和工程验收见 `docs/高画质采集架构.md`；校准流程见 `docs/相机校准流程.md`。
 
 ---
 
@@ -227,9 +232,9 @@ npm run prepackage  # 打包门槛：verify + export 基线 + Swift 配平 + aut
 9. **`ExportOptions.plist` 的 `method` 值随 Xcode 版本变名**：Xcode 16 起 `app-store` → **`app-store-connect`**、`ad-hoc` → `release-testing`、`development` → `debugging`（旧名仍作为 deprecated 别名可用）。两个 workflow 都按 `xcodebuild -version` 的主版本决定用哪个，改这段别写死。
 10. **Swift 数组逐元素循环必须用固定索引**（build 42 真机 crash 根因）：`values[i] = f(values[i]); i += 4` 连写多行时 `i` 会跨行累加，步进错位还会越过数组末尾（Swift 数组越界在 release 也直接 trap）。对 4 浮点/entry 的 cube 数据一律写 `const o = index * 4` + `values[o] / values[o+1] / values[o+2]`。同场教训：`AVCaptureVideoDataOutput.videoSettings` 只接受像素格式键，`kCVPixelBufferWidth/HeightKey` 会被静默忽略（限分辨率要在 CIImage 管线头部 scale）。**CI 只验编译不验运行——任何新的逐帧/逐像素数学必须人工逐行核对索引再出包。**
 11. **Xcode 26.3 SDK 的改名/废弃清单**（run 43/45 实测，写新 Swift 前先对照）：`AVCaptureExposureDurationCurrent`→`AVCaptureDevice.currentExposureDuration`、`AVCaptureISOCurrent`→`AVCaptureDevice.currentISO`（同名「保持当前」哨兵的类属性形态）；连接级 `videoMinFrameDuration`/`isVideoMinFrameDurationSupported` **unavailable**，用设备级 `activeVideoMinFrameDuration`；ImageIO 的 EXIF 键没有 Swift 可导入常量，直接写字面量（`"Orientation"`、`"FocalLengthIn35mmFilm"`）。提交前用 `git grep` 确认没有引用旧名。
-12. **capture input 永远是物理镜头**（2026-09-17 定稿）：26/35/52 共用物理 Wide，只动 `videoZoomFactor`，**不换 input、不重置用户光圈**；13mm/Tele 才经 `setLens` 换 input，且换后**必须**走 `configureForCurrentPhysicalCamera` 统一重建（maxPhotoDimensions / 快拍三件套 / 光圈能力按**新镜头** activeFormat 重读）。禁止改回 virtual capture input。
+12. **默认苹果多摄自动路由（2026-10-27 新决策）**：焦段沿用 JS 坐标契约，native 映射到虚拟设备的主摄切换倍率。应用相机推荐光圈或用户调整主摄真实光圈时切物理输入；ORIG不设置推荐值、不重置当前光圈。不得为降低噪点移除推荐光圈联动。
 13. **镜头切换三件套不可拆**：预览 crossfade（hold/fade，`beginHold` 用 `latestImage` 兜底）+ `lensSwitching` 禁拍窗（新镜头首帧解锁 + **2.5s watchdog 必须保留**）+ 统一重建。拆任何一个 = 黑闪 / 快门永久锁死 / 拿旧镜头参数。
-14. **快门 promise = Apple capture 完成，不含后处理**：`didFinishProcessingPhoto` 即 resolve，Camera DNA/HEIF/PhotoKit 走串行 `processingQueue`，结果经 `onPhotoProcessed` 事件回 JS。**EXIF 焦距真值在 JS focal ladder**（`FocalStop.mm` 直传 + 原生缓存）——原生的「deviceType 基准×zoom」只是无 ladder 信息时的兜底，物理 Tele 曾被它错写成 13mm（build 77 教训），不要删 ladder 传参。
+14. **快门 promise = 曝光结束**：`didCapturePhotoFor` 结算；代理/最终底片、风格与PhotoKit后台完成，通过带 captureID 的 `onPhotoProcessed` 上报；恢复任务不消费其他快门的试拍名额。源EXIF中的光圈与曝光是真值，不用预览时的光圈覆盖。
 
 ---
 

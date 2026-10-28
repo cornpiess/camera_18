@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import React, { useEffect, useRef } from 'react';
 import {
   Image,
@@ -10,7 +11,7 @@ import {
 export interface ThumbnailPreviewProps {
   uri?: string | null;
   size?: number;
-  /** When provided and a photo exists, the thumbnail opens the photo library. */
+  /** When provided and a photo exists, the thumbnail opens the latest photo viewer. */
   onPress?: () => void;
 }
 
@@ -76,7 +77,7 @@ export const ThumbnailPreview: React.FC<ThumbnailPreviewProps> = ({
       <Animated.View style={{ transform: [{ scale: bounceAnim }] }}>
         <TouchableOpacity
           accessibilityRole="button"
-          accessibilityLabel="Open the photo library"
+          accessibilityLabel={t('photoOpen')}
           activeOpacity={0.75}
           onPress={onPress}
         >
