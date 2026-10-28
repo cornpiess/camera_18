@@ -29,6 +29,7 @@ final class CameraPhotoViewer: UIViewController, UIScrollViewDelegate, UIGesture
   private var chromeHidden = false
   private var closing = false
   private var deleting = false
+  private var zoomInProgress = false
   private let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
   private lazy var dismissPan = UIPanGestureRecognizer(target: self, action: #selector(dragToClose(_:)))
 
@@ -147,6 +148,7 @@ final class CameraPhotoViewer: UIViewController, UIScrollViewDelegate, UIGesture
     scroll.transform = .identity
     scroll.frame = view.bounds
     scroll.setZoomScale(1, animated: false)
+    zoomInProgress = false
     scroll.contentInset = .zero
     let fit = min(viewport.width / image.size.width, viewport.height / image.size.height)
     photo.frame = CGRect(origin: .zero, size: CGSize(width: image.size.width * fit, height: image.size.height * fit))
@@ -156,8 +158,13 @@ final class CameraPhotoViewer: UIViewController, UIScrollViewDelegate, UIGesture
   }
 
   func viewForZooming(in scrollView: UIScrollView) -> UIView? { photo }
+  // These delegate callbacks also cover animated zooms and bounce on iOS 15+.
+  func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) { zoomInProgress = true }
   func scrollViewDidZoom(_ scrollView: UIScrollView) { centerPhoto() }
-  func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { centerPhoto() }
+  func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+    zoomInProgress = false
+    centerPhoto()
+  }
   private func centerPhoto() {
     let x = max(0, (scroll.bounds.width - photo.frame.width) / 2)
     let y = max(0, (scroll.bounds.height - photo.frame.height) / 2)
@@ -188,7 +195,7 @@ final class CameraPhotoViewer: UIViewController, UIScrollViewDelegate, UIGesture
     guard gestureRecognizer === dismissPan else { return true }
     let velocity = dismissPan.velocity(in: view)
     return !deleting && !closing && presentedViewController == nil && scroll.zoomScale <= 1.001
-      && !scroll.isZooming && !scroll.isZoomBouncing && !scroll.isZoomAnimating
+      && !scroll.isZooming && !scroll.isZoomBouncing && !zoomInProgress
       && velocity.y > 0 && velocity.y > abs(velocity.x)
   }
   @objc private func dragToClose(_ gesture: UIPanGestureRecognizer) {
