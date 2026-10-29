@@ -584,10 +584,21 @@ final class ApertureController {
       defer { device.unlockForConfiguration() }
       let imp = device.method(for: setterSel)
       let gate = SettleOnceGate(completion: completion)
-      let verify: () -> Void = {
+      // The setter's CMTime ack means "custom exposure applied", NOT "blades at
+      // rest": the very first hardware re-read can still report the previous stop
+      // while the iris is travelling. Re-read within a short bounded window
+      // (~0.9s) before declaring failure — the final verdict is still the
+      // hardware read, never optimism (real-device report: sporadic "still
+      // settling" right after a ring release with first-read-only verification).
+      let verify: (Int) -> Void = { attempt in
         let actual = self.currentAperture(device)
-        gate.settle(actual.isFinite && abs(actual - Double(target)) <= 0.10
-          ? .success(()) : .failure(.apertureNotReady))
+        if actual.isFinite && abs(actual - Double(target)) <= 0.10 {
+          gate.settle(.success(()))
+        } else if attempt >= 6 {
+          gate.settle(.failure(.apertureNotReady))
+        } else {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { verify(attempt + 1) }
+        }
       }
       if api.setterArity == 4 {
         // Per Apple docs the completion handler receives a TIMESTAMP (CMTime), not an
@@ -595,7 +606,7 @@ final class ApertureController {
         typealias ApertureSetter = @convention(c) (NSObject, Selector, Float, CMTime, Float, ((CMTime) -> Void)?) -> Void
         let fn = unsafeBitCast(imp, to: ApertureSetter.self)
         fn(device, setterSel, target, auto.duration, auto.iso) { _ in
-          verify()
+          verify(0)
         }
       } else if api.setterArity == 3 {
         // 3-arg variant has no completion handler — the watchdog below settles the
@@ -610,7 +621,9 @@ final class ApertureController {
       }
       DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
         // A timeout is only a deadline to read hardware, never proof of success.
-        verify()
+        // By now the bounded retry window (~0.9s) has long settled the gate; this
+        // call is a no-op safety net unless the setter ack never fired at all.
+        verify(6)
       }
     } catch {
       completion(.failure(.configurationFailed))

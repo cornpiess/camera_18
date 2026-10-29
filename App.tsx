@@ -1681,7 +1681,15 @@ function CameraAppScreen(): React.JSX.Element {
                             cameraStateRef.current.lastThumbUri = thumbnail;
                             saveCameraState({ lastThumbUri: thumbnail });
                           }
-                        }).catch(() => showTransientError(t('photoUnavailable')))
+                        }).catch((error: unknown) => {
+                          // TestFlight has no console: like the save-failure banner,
+                          // name the native error code so production reports can
+                          // pinpoint WHICH stage of showLatest rejected (busy /
+                          // missing manifest / decode / presenter).
+                          const code = error instanceof CameraEngineError ? error.code
+                            : (typeof (error as { code?: string })?.code === 'string' ? (error as { code: string }).code : String(error ?? 'unknown'));
+                          showTransientError(`${t('photoUnavailable')}\n${code}`);
+                        })
                           .finally(() => { photoViewerOpenRef.current = false; });
                       }}
                     />

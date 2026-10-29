@@ -436,7 +436,13 @@ final class CameraPhotoStore {
       let isLatest = (diagnostics["capturedAt"] as? Double ?? 0) >= (previous?["capturedAt"] as? Double ?? 0)
       let source = CGImageSourceCreateWithURL(url as CFURL, nil)
       let type = source.flatMap { CGImageSourceGetType($0) }.map { $0 as String } ?? "public.jpeg"
-      let final = CameraTempFiles.makeFinalURL(pathExtension: type == "public.heic" || type == "public.heif" ? "heif" : "jpg")
+      // The extension must name the bytes' real container: the viewer decodes via
+      // UIImage(contentsOfFile:), which maps the decoder from the file extension —
+      // a HEIC stream named ".heif" fails that mapping on device (real-device
+      // report: viewer rejected every fresh delivery with "full-size photo
+      // unavailable" while the file itself was intact).
+      let containerExtension = type == "public.heic" ? "heic" : (type == "public.heif" ? "heif" : "jpg")
+      let final = CameraTempFiles.makeFinalURL(pathExtension: containerExtension)
       let thumb = CameraTempFiles.makeThumbURL()
       CameraTempFiles.track([final, thumb])
       try fm.copyItem(at: url, to: final)
@@ -661,9 +667,23 @@ final class CameraPhotoStore {
         var snapshot: (URL, [String: Any], UIImage)?
         let cache = self.fm.temporaryDirectory.appendingPathComponent("Camera18Viewer", isDirectory: true)
         do {
-          guard var facts = self.latestFacts() else { throw CameraEngineError.processingFailed }
-          guard facts["previewDeleted"] as? Bool != true, let uri = facts["fileUri"] as? String,
-                let source = URL(string: uri), source.isFileURL else { throw CameraEngineError.processingFailed }
+          // Distinct failure codes per stage: TestFlight has no console, so the JS
+          // banner naming the code is the only production channel that tells these
+          // apart (missing delivery record vs. decode failure vs. presenter).
+          guard var facts = self.latestFacts() else { throw CameraEngineError.saveFailed }
+          if facts["previewDeleted"] as? Bool == true {
+            // The latest photo was deleted in Photos — settle as a deletion, not a
+            // failure: the JS thumbnail flow then clears the chip exactly as if the
+            // viewer's own delete button had been used.
+            let id = facts["captureID"] as? String ?? ""
+            DispatchQueue.main.async {
+              self.viewerOpening = false
+              completion(.success(["deleted": true, "captureID": id]))
+            }
+            return
+          }
+          guard let uri = facts["fileUri"] as? String,
+                let source = URL(string: uri), source.isFileURL else { throw CameraEngineError.saveFailed }
           try? self.fm.removeItem(at: cache) // no viewer is active; removes a crash's stale copy
           try self.fm.createDirectory(at: cache, withIntermediateDirectories: true)
           let file = cache.appendingPathComponent("photo").appendingPathExtension(source.pathExtension)
@@ -677,7 +697,7 @@ final class CameraPhotoStore {
           self.viewerOpening = false
           guard let (file, facts, image) = loaded, let presenter = self.presenter(),
                 !presenter.isBeingDismissed, !presenter.isBeingPresented,
-                presenter.viewIfLoaded?.window != nil else { completion(.failure(.processingFailed)); return }
+                presenter.viewIfLoaded?.window != nil else { completion(.failure(.noActiveView)); return }
           let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
             self.deleteViewedPhoto(facts, completion: callback)
           }, onClose: { deleted in

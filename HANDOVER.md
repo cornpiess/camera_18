@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-29 build 107 实机反馈：保存链路已通，修 viewer 打开失败与光圈误报
+
+用户实机反馈（build 107 = bd4ca0a，3302 修复生效，照片正常入库相册）：① 点左下角缩略图弹 "Full-size photo is unavailable"；② 偶发 "Aperture is still settling. Try again"。
+
+**问题 ① 根因**：deliver 把 HEIC 容器字节命名为 `.heif` 扩展名（`CGImageSourceGetType` 返回 public.heic 却映射 "heif"）——Camera18Latest 副本、viewer 临时快照全链路扩展名与字节不符，`UIImage(contentsOfFile:)` 按扩展名映射解码器而失败。修复：containerExtension 按真实 UTI 映射（heic/heif/jpg）。附带两处：latest.json 里照片已在 Photos 被删（previewDeleted）时不再弹错横幅——改走 `success({deleted:true})` 让 JS 按删除流程清 chip；showLatest 失败分阶段错误码（saveFailed=latest 记录/文件缺失、processingFailed=解码失败、noActiveView=presenter 不可用、captureBusy=占用），App.tsx 的 photoUnavailable 横幅附错误码（101dc31 同款生产诊断通道）——若再失败，横幅第二行直接指出阶段。
+
+**问题 ② 根因**：`setPhysicalAperture` 的 verify 在 setter CMTime 回调一到就单次回读硬件——CMTime ack 语义是"自定义曝光参数已应用"，不是"叶片物理到位"，叶片行程中回读仍是旧 stop，差 >0.10 → 误报 apertureNotReady（SettleOnceGate 一锤定音无复检机会）。修复：verify 改有界复检——首读未到位则以 0.15s 间隔重读（最多 6 次 ≈0.9s 窗口），任一次到达即 success，窗口尽仍差才 failure；3s 看门狗改为 verify(6) 最后期限一读定案（复检循环 ~0.9s 早已 settle 时它是 no-op）。最终裁决仍是硬件回读，"不乐观成功"红线不变；容差 0.10 与 accepted-range 端点夹取逻辑不动。
+
+`npm run prepackage` 全绿（757 modules）；Swift 仅括号配平自查——待 CI 构建验证；viewer 打开、删除后 chip 清除、光圈松手收敛待真机验收。本轮不触发构建。
+
 ## 2026-10-29 3302 根因定案：入库文件必须带真实图片扩展名（build 105 实机反馈）
 
 用户实机反馈（build 105 = 87bb4d0）：保存仍失败，但 101dc31 的 detail 通道终于带出真实错误——PHPhotosErrorDomain **code 3302 invalidResource（资源校验失败）**。据此定案（取代上一节"配料回退"假说）：CameraPhotoStore 落盘的私有扩展名 `.data`（source.data / rendered.data）+ `addResource options:nil` —— PhotoKit 对 fileURL 资源靠扩展名+内容嗅探判定类型，`.data` 不是任何图片 UTI，资源校验必拒。这同时解释了 build 92 旧管线为何稳定（旧管线喂的是 .jpg/.heic 真实扩展名临时文件）、以及 build 103/105 为何 100% 失败：新管线所有 addResource(fileURL:) 路径全带 `.data`（风格片 rendered.data、ORIG/fallback source.data；仅 proxy 走 `data:` 重载幸免——其注释自己就写着 ".data suffix must not determine a Photos UTI"，flattened 路径却漏了）。上一节退回的事务形状本身没错，错的是文件名。
