@@ -695,9 +695,11 @@ final class CameraPhotoStore {
         let loaded = snapshot
         DispatchQueue.main.async {
           self.viewerOpening = false
-          guard let (file, facts, image) = loaded, let presenter = self.presenter(),
-                !presenter.isBeingDismissed, !presenter.isBeingPresented,
-                presenter.viewIfLoaded?.window != nil else { completion(.failure(.noActiveView)); return }
+          // Presenting onto a mid-transition controller is legal (UIKit queues it),
+          // and a presented-chain tail may legitimately have no loaded view — the
+          // old triple guard (dismiss/present/window) rejected a presenter the
+          // system would have happily used. Only a missing presenter is fatal.
+          guard let (file, facts, image) = loaded, let presenter = self.presenter() else { completion(.failure(.noActiveView)); return }
           let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
             self.deleteViewedPhoto(facts, completion: callback)
           }, onClose: { deleted in
@@ -757,7 +759,14 @@ final class CameraPhotoStore {
 
   private func presenter() -> UIViewController? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-    var controller = scenes.first(where: { $0.activationState == .foregroundActive })?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+    // Prefer an active scene, but never REQUIRE one: activationState lags brief
+    // foreground transitions, and demanding the exact .foregroundActive match is
+    // what made every viewer tap fail with ERR_NO_ACTIVE_VIEW on device (the app
+    // was plainly on screen — the scene just was not reporting that state yet).
+    let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
+    let windows = scene?.windows ?? []
+    let root = (windows.first(where: { $0.isKeyWindow }) ?? windows.first(where: { $0.rootViewController != nil }))?.rootViewController
+    var controller = root
     while let next = controller?.presentedViewController { controller = next }
     return controller
   }

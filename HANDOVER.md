@@ -6,6 +6,10 @@
 
 ---
 
+## 2026-10-29 build 108 反馈：ERR_NO_ACTIVE_VIEW——presenter 过严，viewer 仍打不开
+
+用户实机反馈（build 108 = dfa05c2）：点左下角预览仍弹 "Full-size photo is unavailable"，横幅第二行 `ERR_NO_ACTIVE_VIEW`——分阶段错误码诊断通道生效，直接定位：latest.json→文件→copyItem→UIImage 解码**全部成功**（heic 扩展名修复已验证），卡在最后的 presenter guard。根因：presenter() 强制要求 scene `activationState == .foregroundActive`（状态上报滞后于真实前台时序就拿不到），加三重转场检查（isBeingDismissed/isBeingPresented/viewIfLoaded?.window）对 presented 链末端过度防御——必现拒绝。修复：scene 匹配降级为"优先 active、否则任一 scene"；window 选择 keyWindow→首个有 rootVC 的 window；present guard 只保留 presenter 非 nil（present 到转场中的 VC 合法，UIKit 排队）。showRecovery 同用 presenter() 自动受益。Swift 待 CI 构建验证；viewer 打开待真机验收。
+
 ## 2026-10-29 build 107 实机反馈：保存链路已通，修 viewer 打开失败与光圈误报
 
 用户实机反馈（build 107 = bd4ca0a，3302 修复生效，照片正常入库相册）：① 点左下角缩略图弹 "Full-size photo is unavailable"；② 偶发 "Aperture is still settling. Try again"。
