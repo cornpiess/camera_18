@@ -88,7 +88,35 @@ final class CameraPhotoStore {
   }
 
   private func folder(_ id: String) -> URL { directory.appendingPathComponent(id, isDirectory: true) }
-  private func sourceURL(_ job: Job) -> URL { folder(job.id).appendingPathComponent("source.data") }
+
+  /// PhotoKit's resource validation sniffs a fileURL's extension when creation
+  /// options are nil; an extension-less ".data" file fails that sniff on device
+  /// with PHPhotosErrorDomain code 3302 (invalidResource). Every byte stream we
+  /// hand the library must carry the extension its container implies.
+  private static func imageFileExtension(for data: Data) -> String {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let uti = CGImageSourceGetType(source) as String? else { return "jpg" }
+    return uti.contains("heic") || uti.contains("heif") ? "heic" : "jpg"
+  }
+
+  /// Fresh jobs persist under a real image extension; legacy journals still hold
+  /// "source.data". Probing keeps every reader working across both generations.
+  private func sourceURL(_ job: Job) -> URL {
+    for name in ["source.heic", "source.jpg", "source.data"] {
+      let url = folder(job.id).appendingPathComponent(name)
+      if fm.fileExists(atPath: url.path) { return url }
+    }
+    return folder(job.id).appendingPathComponent("source.jpg")
+  }
+
+  private func renderedFile(_ job: Job) -> URL? {
+    for name in ["rendered.heic", "rendered.jpg", "rendered.data"] {
+      let url = folder(job.id).appendingPathComponent(name)
+      if fm.fileExists(atPath: url.path) { return url }
+    }
+    return nil
+  }
+
   private func save(_ job: Job) throws {
     try JSONEncoder().encode(job).write(to: folder(job.id).appendingPathComponent("job.json"), options: .atomic)
   }
@@ -110,7 +138,9 @@ final class CameraPhotoStore {
           profileData: try JSONSerialization.data(withJSONObject: profile, options: .sortedKeys),
           diagnosticsData: try JSONSerialization.data(withJSONObject: diagnostics, options: .sortedKeys))
         try self.fm.createDirectory(at: self.folder(job.id), withIntermediateDirectories: true)
-        try data.write(to: self.sourceURL(job), options: .atomic)
+        // Write the source under its real container extension so the later
+        // PhotoKit import never depends on content sniffing alone.
+        try data.write(to: self.folder(job.id).appendingPathComponent("source.\(Self.imageFileExtension(for: data))"), options: .atomic)
         try self.save(job)
         self.callbacks[job.id] = completion
         self.updateCapacity()
@@ -174,12 +204,18 @@ final class CameraPhotoStore {
       return
     }
     var job = originalJob
+    var freshRender: URL? = nil
     if !job.proxy, profile(job)["passthrough"] as? Bool != true {
       do {
-        let destination = folder(job.id).appendingPathComponent("rendered.data")
+        // Drop any earlier attempt's outputs first, so file probing below can
+        // only ever resolve to the file written by THIS attempt.
+        try? fm.removeItem(at: folder(job.id).appendingPathComponent("rendered.heic"))
+        try? fm.removeItem(at: folder(job.id).appendingPathComponent("rendered.jpg"))
+        let heicFile = folder(job.id).appendingPathComponent("rendered.heic")
+        let jpegFile = folder(job.id).appendingPathComponent("rendered.jpg")
         let scene: CameraSceneContext
-        do { scene = try render(job, source: sourceURL(job), destination: destination, type: "public.heic") }
-        catch { scene = try render(job, source: sourceURL(job), destination: destination, type: "public.jpeg") }
+        do { scene = try render(job, source: sourceURL(job), destination: heicFile, type: "public.heic"); freshRender = heicFile }
+        catch { scene = try render(job, source: sourceURL(job), destination: jpegFile, type: "public.jpeg"); freshRender = jpegFile }
         job.renderMetadata = try JSONSerialization.data(withJSONObject: [
           "rendererVersion": CameraDNARenderer.rendererVersion, "scene": scene.dictionary,
           "colorContract": (profile(job)["recipe"] as? [String: Any])?["colorContract"] ?? CameraDNARenderer.legacyColorContract,
@@ -197,6 +233,24 @@ final class CameraPhotoStore {
         NSLog("[CameraEngine][Photo] id=%@ style failed; saving Apple source: %@", job.id, error.localizedDescription)
       }
     }
+    // The library import hands PhotoKit a file whose extension matches its bytes
+    // (creation options stay nil — the exact shape that saved reliably for
+    // months). Legacy ".data" journals get a staged copy under a real extension
+    // instead of entering the change block as-is.
+    var libraryFile = job.flattened ? (freshRender ?? renderedFile(job) ?? sourceURL(job)) : sourceURL(job)
+    var stagedCopy: URL? = nil
+    if !job.proxy {
+      let ext = libraryFile.pathExtension.lowercased()
+      if ext != "heic" && ext != "jpg" && ext != "jpeg" {
+        let staged = folder(job.id).appendingPathComponent(
+          "import." + Self.imageFileExtension(for: (try? Data(contentsOf: libraryFile)) ?? Data()))
+        try? fm.removeItem(at: staged)
+        if (try? fm.copyItem(at: libraryFile, to: staged)) != nil {
+          stagedCopy = staged
+          libraryFile = staged
+        }
+      }
+    }
     var journalError: Error?
     PHPhotoLibrary.shared().performChanges({
       let request = PHAssetCreationRequest.forAsset()
@@ -208,15 +262,7 @@ final class CameraPhotoStore {
             request.addResource(with: .photoProxy, data: try Data(contentsOf: self.sourceURL(job)), options: nil)
           } else { throw CameraEngineError.processingFailed }
         } else {
-          // EXACTLY the transaction shape that saved reliably on real devices for
-          // months (pre-CameraPhotoStore pipeline): plain file resource, nil
-          // options, PhotoKit sniffs the file itself. The extra hints introduced
-          // with the journal store (uniformTypeIdentifier/originalFilename +
-          // journal disk I/O inside this block) coincided with a 100% transaction
-          // failure on an iPhone 18 Pro / iOS 27 device — every capture died with
-          // ERR_SAVE_FAILED and no asset ever appeared. No hint the device rejects
-          // belongs inside the change block.
-          request.addResource(with: .photo, fileURL: job.flattened ? self.folder(job.id).appendingPathComponent("rendered.data") : self.sourceURL(job), options: nil)
+          request.addResource(with: .photo, fileURL: libraryFile, options: nil)
         }
         job.assetID = request.placeholderForCreatedAsset?.localIdentifier
         // Persist the ID best-effort when we have one: a journal failure must
@@ -226,6 +272,9 @@ final class CameraPhotoStore {
       } catch { journalError = error }
     }) { success, error in
       self.queue.async {
+        // Photos has copied (or rejected) the resource by now; the staged copy
+        // for legacy ".data" journals is no longer needed either way.
+        if let stagedCopy = stagedCopy { try? self.fm.removeItem(at: stagedCopy) }
         guard self.isActive(job) else { return }
         guard success else {
           // A confirmed transaction failure is safe to retry on the next resume.
@@ -236,7 +285,7 @@ final class CameraPhotoStore {
         }
         job.originalConfirmed = true
         try? self.save(job)
-        if job.flattened { self.deliver(job, url: self.folder(job.id).appendingPathComponent("rendered.data"), fallback: false) }
+        if job.flattened { self.deliver(job, url: freshRender ?? self.renderedFile(job) ?? self.sourceURL(job), fallback: false) }
         else if !job.proxy { self.deliver(job, url: self.sourceURL(job), fallback: job.processingFallback == true) }
         else { self.loadFinal(job) }
       }
@@ -260,7 +309,7 @@ final class CameraPhotoStore {
           return
         }
       }
-      deliver(job, url: folder(job.id).appendingPathComponent("rendered.data"), fallback: false)
+      deliver(job, url: renderedFile(job) ?? sourceURL(job), fallback: false)
       return
     }
     if !job.proxy, job.originalConfirmed == true,
@@ -449,7 +498,7 @@ final class CameraPhotoStore {
           else { try fm.removeItem(at: folder(job.id)) }
           // Only the clean source and recipe need long-term retention. The styled
           // result is already in Photos / latest; do not archive a second copy.
-          for name in ["rendered.data", "final.data"] { try? fm.removeItem(at: target.appendingPathComponent(name)) }
+          for name in ["rendered.data", "rendered.heic", "rendered.jpg", "final.data", "import.heic", "import.jpg"] { try? fm.removeItem(at: target.appendingPathComponent(name)) }
         } else { try fm.removeItem(at: folder(job.id)) }
       } catch { NSLog("[CameraEngine][Photo] saved; retained journal after cleanup failure: %@", error.localizedDescription) }
       let callback = callbacks.removeValue(forKey: job.id)
@@ -746,7 +795,12 @@ final class CameraPhotoStore {
           })
         }
         let exportable = pending.filter { !$0.proxy }.map { self.sourceURL($0) }
-          + retained.map { $0.appendingPathComponent("source.data") }
+          + retained.flatMap { archived in
+              ["source.heic", "source.jpg", "source.data"].compactMap { name in
+                let url = archived.appendingPathComponent(name)
+                return self.fm.fileExists(atPath: url.path) ? url : nil
+              }
+            }
         if !exportable.isEmpty {
           sheet.addAction(UIAlertAction(title: zh ? "导出保留的原图" : "Export retained originals", style: .default) { _ in
             self.queue.async {

@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-29 3302 根因定案：入库文件必须带真实图片扩展名（build 105 实机反馈）
+
+用户实机反馈（build 105 = 87bb4d0）：保存仍失败，但 101dc31 的 detail 通道终于带出真实错误——PHPhotosErrorDomain **code 3302 invalidResource（资源校验失败）**。据此定案（取代上一节"配料回退"假说）：CameraPhotoStore 落盘的私有扩展名 `.data`（source.data / rendered.data）+ `addResource options:nil` —— PhotoKit 对 fileURL 资源靠扩展名+内容嗅探判定类型，`.data` 不是任何图片 UTI，资源校验必拒。这同时解释了 build 92 旧管线为何稳定（旧管线喂的是 .jpg/.heic 真实扩展名临时文件）、以及 build 103/105 为何 100% 失败：新管线所有 addResource(fileURL:) 路径全带 `.data`（风格片 rendered.data、ORIG/fallback source.data；仅 proxy 走 `data:` 重载幸免——其注释自己就写着 ".data suffix must not determine a Photos UTI"，flattened 路径却漏了）。上一节退回的事务形状本身没错，错的是文件名。
+
+修复（全部 `CameraPhotoStore.swift`）：accept 落盘前用 CGImageSource 探测容器类型，source 命名为 source.heic/source.jpg；风格渲染输出写 rendered.heic（JPEG 兜底 rendered.jpg），每次渲染前清残留保证探测唯一；addResource 前统一检查 libraryFile 扩展名——旧 `.data` journal 复制为 `import.<ext>` 再入库、事务 completion 后删除（复制在 change block 外完成，block 内保持零磁盘 IO）；deliver/loadFinal/归档清理/导出列表全部改为扩展名探测（heic→jpg→data 三代兼容，旧 journal 的 ORIG/fallback 任务重试同样被救活）。proxy `data:` 重载与 `options:nil` 事务形状不变。
+
+`npm run prepackage` 全绿（757 modules）；Swift 仅括号配平自查——编译与 PhotoKit 行为待 CI 构建验证，3302 是否消失待真机验收。本轮不触发构建，用户自行触发。
+
 ## 2026-10-28 PhotoKit 事务回归已验证形状（103 实机反馈后）
 
 用户实机反馈（build 103 = 6611d7a）：点重试弹 "Couldn't save the photo — check your storage"（ERR_SAVE_FAILED）与三振终态 "Originals kept" 横幅，**系统相册始终一张都没有** → PhotoKit 入库事务从未成功，非状态误报；三振机制本身工作正常（journal 读写与移档均有证据），排除落盘问题。与 build 92 时代（同设备保存稳定）逐行对照，新 CameraPhotoStore 的事务多了三样从未在真机验证过的配料：资源 options 的 uniformTypeIdentifier/originalFilename 提示、change block 内 journal 磁盘写、placeholder 为 nil 即 throw（journal 写失败还会把已提交的事务误报为 saveFailed）。本轮 createAsset 全部退回已验证事务形状：`addResource(.photo, fileURL:, options: nil)`（PhotoKit 自行嗅探，旧管线数月实证）；placeholder nil 不再致命（照片仍入库，仅无资产引用）；journal 持久化改 try? 尽力而为，成功事务永不被日志失败抹黑；成功+journalError 误报分支删除（该 error 只可能在事务注定失败的路上产生）。横幅附带原生 detail（101dc31）保留——若仍失败，下次点 pill 即可读到真实 NSError。Swift 编译与 PhotoKit 行为待 CI/真机验收；本轮不触发构建。
