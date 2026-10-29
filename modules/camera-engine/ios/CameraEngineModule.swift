@@ -590,7 +590,9 @@ final class ApertureController {
       // (~0.9s) before declaring failure — the final verdict is still the
       // hardware read, never optimism (real-device report: sporadic "still
       // settling" right after a ring release with first-read-only verification).
-      let verify: (Int) -> Void = { attempt in
+      // A nested function, not a recursive closure literal: a closure cannot
+      // capture its own let binding before it is declared.
+      func verify(_ attempt: Int) {
         let actual = self.currentAperture(device)
         if actual.isFinite && abs(actual - Double(target)) <= 0.10 {
           gate.settle(.success(()))

@@ -237,6 +237,7 @@ npm run prepackage  # 打包门槛：verify + export 基线 + Swift 配平 + aut
 12. **默认苹果多摄自动路由（2026-10-27 新决策）**：焦段沿用 JS 坐标契约，native 映射到虚拟设备的主摄切换倍率。应用相机推荐光圈或用户调整主摄真实光圈时切物理输入；ORIG不设置推荐值、不重置当前光圈。不得为降低噪点移除推荐光圈联动。
 13. **镜头切换三件套不可拆**：预览 crossfade（hold/fade，`beginHold` 用 `latestImage` 兜底）+ `lensSwitching` 禁拍窗（新镜头首帧解锁 + **2.5s watchdog 必须保留**）+ 统一重建。拆任何一个 = 黑闪 / 快门永久锁死 / 拿旧镜头参数。
 14. **快门 promise = 曝光结束**：`didCapturePhotoFor` 结算；代理/最终底片、风格与PhotoKit后台完成，通过带 captureID 的 `onPhotoProcessed` 上报；恢复任务不消费其他快门的试拍名额。源EXIF中的光圈与曝光是真值，不用预览时的光圈覆盖。
+15. **递归回调不能写成闭包字面量自捕获**（run 40821736602 编译失败教训）：`let f = { ... f(...) ... }` 报 "closure captures 'f' before it is declared"——闭包在赋值表达式右侧无法捕获正在声明的绑定。需要自引用的延迟/重试逻辑一律写**嵌套函数** `func f(_ n: Int) { ... f(n+1) ... }`（函数名在自己的作用域内可见，合法）。写完任何自引用回调先按这条自查。
 
 ---
 
