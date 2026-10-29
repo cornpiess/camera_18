@@ -665,6 +665,7 @@ final class CameraPhotoStore {
       self.viewerOpening = true
       self.queue.async {
         var snapshot: (URL, [String: Any], UIImage)?
+        var snapshotError: CameraEngineError?
         let cache = self.fm.temporaryDirectory.appendingPathComponent("Camera18Viewer", isDirectory: true)
         do {
           // Distinct failure codes per stage: TestFlight has no console, so the JS
@@ -686,20 +687,43 @@ final class CameraPhotoStore {
                 let source = URL(string: uri), source.isFileURL else { throw CameraEngineError.saveFailed }
           try? self.fm.removeItem(at: cache) // no viewer is active; removes a crash's stale copy
           try self.fm.createDirectory(at: cache, withIntermediateDirectories: true)
-          let file = cache.appendingPathComponent("photo").appendingPathExtension(source.pathExtension)
+          // Name the cache file by the bytes' REAL container, never by the on-disk
+          // extension: captures delivered before the extension fix still sit in
+          // Camera18Latest as HEIC bytes under a ".heif" name, and UIImage picks
+          // its decoder from the path.
+          let detectedType = CGImageSourceCreateWithURL(source as CFURL, nil)
+            .flatMap { CGImageSourceGetType($0) }.map { $0 as String }
+          let cacheExtension = detectedType == "public.heic" ? "heic"
+            : (detectedType == "public.heif" ? "heif" : "jpg")
+          let file = cache.appendingPathComponent("photo").appendingPathExtension(cacheExtension)
           try self.fm.copyItem(at: source, to: file)
-          guard let image = UIImage(contentsOfFile: file.path) else { throw CameraEngineError.processingFailed }
+          // Extension-agnostic fallback: if UIImage still refuses the file,
+          // decode straight from the container (content sniffing, no path hint).
+          var image = UIImage(contentsOfFile: file.path)
+          if image == nil, let container = CGImageSourceCreateWithURL(file as CFURL, nil),
+             let decoded = CGImageSourceCreateImageAtIndex(container, 0, nil) {
+            image = UIImage(cgImage: decoded)
+          }
+          guard let image = image else { throw CameraEngineError.processingFailed }
           if facts["profileName"] == nil, let id = facts["profileID"] as? String { facts["profileName"] = profileNames[id] }
           snapshot = (file, facts, image)
-        } catch { try? self.fm.removeItem(at: cache) }
+        } catch {
+          try? self.fm.removeItem(at: cache)
+          // Preserve the thrown code — swallowing it here once collapsed every
+          // snapshot failure onto the presenter's ERR_NO_ACTIVE_VIEW and hid the
+          // real stage (real-device report: same code twice, two different bugs).
+          snapshotError = error as? CameraEngineError ?? .processingFailed
+        }
         let loaded = snapshot
+        let loadFailure = snapshotError
         DispatchQueue.main.async {
           self.viewerOpening = false
+          guard let (file, facts, image) = loaded else { completion(.failure(loadFailure ?? .processingFailed)); return }
           // Presenting onto a mid-transition controller is legal (UIKit queues it),
           // and a presented-chain tail may legitimately have no loaded view — the
           // old triple guard (dismiss/present/window) rejected a presenter the
           // system would have happily used. Only a missing presenter is fatal.
-          guard let (file, facts, image) = loaded, let presenter = self.presenter() else { completion(.failure(.noActiveView)); return }
+          guard let presenter = self.presenter() else { completion(.failure(.noActiveView)); return }
           let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
             self.deleteViewedPhoto(facts, completion: callback)
           }, onClose: { deleted in
@@ -757,7 +781,18 @@ final class CameraPhotoStore {
     }
   }
 
+  /// The live CameraEngineView registers itself here whenever it is in a window.
+  /// A view that is visibly on screen is ground truth the scene API may fail to
+  /// report (real-device report: every scene walk returned nil on a fully
+  /// foregrounded app — ERR_NO_ACTIVE_VIEW on each viewer tap).
+  weak var hostView: UIView?
+
   private func presenter() -> UIViewController? {
+    if let root = hostView?.window?.rootViewController {
+      var controller = root
+      while let next = controller.presentedViewController { controller = next }
+      return controller
+    }
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     // Prefer an active scene, but never REQUIRE one: activationState lags brief
     // foreground transitions, and demanding the exact .foregroundActive match is

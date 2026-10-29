@@ -6,7 +6,13 @@
 
 ---
 
-## 2026-10-29 build 108 反馈：ERR_NO_ACTIVE_VIEW——presenter 过严，viewer 仍打不开
+## 2026-10-29 ERR_NO_ACTIVE_VIEW 二轮：信息黑洞修复 + presenter 地面真相锚点
+
+用户实机反馈（build 108 = 8afc57f 时代）：预览仍打不开，横幅仍是 ERR_NO_ACTIVE_VIEW。复盘发现上一轮修复自带**信息黑洞**：showLatest 的 catch 丢弃了 do 块里 throw 的分阶段错误码，且「快照 nil」与「presenter nil」合并在同一 guard 里全部报 noActiveView——所以 108 上的这个码**不能证明**是 presenter 问题，同样可能是快照失败（最典型：107 交付的旧照片在磁盘上是 HEIC 字节 + `.heif` 扩展名，108 的 deliver 清理尚未触发，点旧 chip 仍解码失败）。本轮修复：① catch 保留真实错误码、快照与 presenter 拆分 guard（黑洞性问题不再复发）；② viewer cache 文件按 CGImageSource 探测的**真实容器**命名（不信任磁盘扩展名，旧 .heif 遗留文件直接治好）；③ UIImage 按路径解码失败时回退 CGImageSourceCreateImageAtIndex 内容解码（零路径依赖兜底）；④ presenter() 第一优先从活的 CameraEngineView 反查 window（didMoveToWindow 注册 weak hostView——屏幕上可见的 view 是 scene API 报告失败时的地面真相），scene 降级路径保留为回退。注意：若 108 实机未安装 8afc05c2 之后的构建，此前的 presenter 降级也未生效——请以最新构建验收。
+
+
+
+## 2026-10-29 build 108 反馈（一轮）：presenter 过严
 
 用户实机反馈（build 108 = dfa05c2）：点左下角预览仍弹 "Full-size photo is unavailable"，横幅第二行 `ERR_NO_ACTIVE_VIEW`——分阶段错误码诊断通道生效，直接定位：latest.json→文件→copyItem→UIImage 解码**全部成功**（heic 扩展名修复已验证），卡在最后的 presenter guard。根因：presenter() 强制要求 scene `activationState == .foregroundActive`（状态上报滞后于真实前台时序就拿不到），加三重转场检查（isBeingDismissed/isBeingPresented/viewIfLoaded?.window）对 presented 链末端过度防御——必现拒绝。修复：scene 匹配降级为"优先 active、否则任一 scene"；window 选择 keyWindow→首个有 rootVC 的 window；present guard 只保留 presenter 非 nil（present 到转场中的 VC 合法，UIKit 排队）。showRecovery 同用 presenter() 自动受益。Swift 待 CI 构建验证；viewer 打开待真机验收。
 

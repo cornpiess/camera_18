@@ -1127,6 +1127,11 @@ public final class CameraEngineView: ExpoView {
 
   public override func didMoveToWindow() {
     super.didMoveToWindow()
+    // The on-screen preview is the viewer's ground-truth presenter anchor: the
+    // scene-based window walk returned nil on a fully foregrounded device.
+    // Set on attach only — the weak reference self-cleans on teardown, and a
+    // detach handler would race a replacement view's attach.
+    if window != nil { CameraPhotoStore.shared.hostView = self }
     Self.registrationHandler?(self, window != nil)
   }
 
