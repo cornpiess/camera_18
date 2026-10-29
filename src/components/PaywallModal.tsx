@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { t } from '../i18n';
 import { useMonetization } from '../monetization/MonetizationProvider';
@@ -18,6 +18,8 @@ export interface PaywallModalProps {
   /** Analytics-free but kept for diagnostics: why the paywall appeared. */
   readonly source: PaywallSource | null;
   readonly onClose: () => void;
+  readonly photoUri?: string | null;
+  readonly onUseFreeCamera: () => void;
 }
 
 const LEGAL_URLS = {
@@ -34,7 +36,7 @@ const MANAGE_FALLBACK_URL = 'https://apps.apple.com/account/subscriptions';
  * FOUNDING PRICE badge, which hides itself automatically once the configured
  * end date passes (old binaries stop advertising a dead offer).
  */
-export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onClose }) => {
+export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onClose, onUseFreeCamera, photoUri }) => {
   const { isPro, products, productsLoaded, reloadProducts, purchase, restorePurchases } = useMonetization();
   const [selected, setSelected] = useState<string>(YEARLY_PRODUCT_ID);
   const [busy, setBusy] = useState<boolean>(false);
@@ -151,11 +153,12 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
       <View style={styles.backdrop}>
         <Pressable accessibilityLabel="Close paywall" accessibilityRole="button" style={StyleSheet.absoluteFillObject} onPress={onClose} />
-        <View style={styles.sheet}>
+        <ScrollView style={styles.sheetOuter} contentContainerStyle={styles.sheet}>
           <Pressable accessibilityLabel="Close" accessibilityRole="button" hitSlop={12} onPress={onClose} style={styles.closeButton}>
             <Text style={styles.closeGlyph}>✕</Text>
           </Pressable>
 
+          {source === 'trialExhausted' && photoUri ? <Image source={{ uri: photoUri }} style={styles.heroPhoto} resizeMode="cover" /> : null}
           <Text style={styles.title}>{t('paywallTitle')}</Text>
           <Text style={styles.subtitle}>{t('paywallSubtitle')}</Text>
 
@@ -186,6 +189,12 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
 
           {statusLine ? <Text style={styles.statusLine}>{statusLine}</Text> : null}
 
+          {source === 'trialExhausted' ? (
+            <Pressable accessibilityRole="button" disabled={busy} onPress={onUseFreeCamera} style={styles.freeCamera}>
+              <Text style={styles.freeCameraText}>{t('paywallUseFreeCamera')}</Text>
+            </Pressable>
+          ) : null}
+
           <View style={styles.footerRow}>
             {isPro ? (
               <Pressable hitSlop={6} onPress={handleManage}>
@@ -206,7 +215,7 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
             </Pressable>
           </View>
           <Text style={styles.autoRenewNote}>{t('paywallAutoRenewNote')}</Text>
-        </View>
+        </ScrollView>
       </View>
     </Modal>
   );
@@ -215,6 +224,10 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
 const ACCENT = '#E8B84B';
 
 const styles = StyleSheet.create({
+  sheetOuter: { width: '100%', maxWidth: 360, maxHeight: '90%', borderRadius: 24 },
+  heroPhoto: { width: '100%', height: 96, borderRadius: 12, marginBottom: 12 },
+  freeCamera: { alignItems: 'center', paddingVertical: 10, minHeight: 44, justifyContent: 'center' },
+  freeCameraText: { color: 'rgba(255, 255, 255, 0.8)', fontSize: 13, fontWeight: '600' },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.72)',

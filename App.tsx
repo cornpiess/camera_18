@@ -303,6 +303,10 @@ function CameraAppScreen(): React.JSX.Element {
   const { isPro, trialUsed, reserveTrialShot, commitTrialShot, rollbackTrialShot } = useMonetization();
   // First-launch onboarding gate (persisted as a VERSION, not a bool).
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
+  const startAfterOnboardingRef = useRef(false);
+  const firstPhotoHintPendingRef = useRef(false);
+  const [apertureHintPending, setApertureHintPending] = useState(false);
+  const [lastStyledPreview, setLastStyledPreview] = useState<{ profileId: string; uri: string } | null>(null);
   // Paywall = user-intent moments ONLY (exhausted shutter press / explicit Pro taps).
   const [paywall, setPaywall] = useState<{ source: PaywallSource; profileId: string | null } | null>(null);
   // Light, NON-blocking hint after the LAST trial shot saved (never a surprise paywall).
@@ -592,6 +596,8 @@ function CameraAppScreen(): React.JSX.Element {
       if (!mounted || !photo || (photo.capturedAt ?? 0) < latestDeliveredCaptureAtRef.current) return;
       latestDeliveredCaptureAtRef.current = photo.capturedAt ?? 0;
       latestDeliveredCaptureIDRef.current = photo.captureID ?? null;
+      setLastStyledPreview(!photo.processingFallback && !photo.previewDeleted && photo.profileID && photo.thumbnailUri
+        ? { profileId: photo.profileID, uri: photo.thumbnailUri } : null);
       setLatestThumbnail(photo.previewDeleted ? null : photo.thumbnailUri ?? null);
     }).catch(() => {});
     return () => { mounted = false; stateSubscription.remove(); shutterSubscription.remove(); deliverySubscription.remove(); };
@@ -866,9 +872,13 @@ function CameraAppScreen(): React.JSX.Element {
         else showTransientError(t('photoRetrySaving'));
         return;
       }
-      const settled = !trialProfile || !receiptID || commitTrialShotRef.current(trialProfile, receiptID);
+      // A fallback delivered only Apple's original, not the requested camera look.
+      // Release the reservation so a failed style does not spend a trial shot.
+      const settled = !trialProfile || !receiptID || (event.processingFallback
+        ? rollbackTrialShotRef.current(trialProfile, receiptID)
+        : commitTrialShotRef.current(trialProfile, receiptID));
       if (settled) acknowledge();
-      if (pending) {
+      if (pending && !event.processingFallback) {
         const remaining = TRIAL_LIMIT - (trialUsedRef.current[pending.profileId] ?? 0) - 1;
         recordDiag('info', `trial: committed (${pending.profileId}, remaining=${remaining})`);
         // The 3rd (last) free shot just saved: a LIGHT, non-blocking hint — the
@@ -889,6 +899,7 @@ function CameraAppScreen(): React.JSX.Element {
       if (capturedAt < latestDeliveredCaptureAtRef.current) return;
       latestDeliveredCaptureAtRef.current = capturedAt;
       latestDeliveredCaptureIDRef.current = event.captureID ?? null;
+      setLastStyledPreview(null);
       const thumbUri = event.thumbnailUri ?? null;
       if (thumbUri) {
         // RN Image caches by URI: the native persisted thumbnail path is STABLE, so the
@@ -914,6 +925,14 @@ function CameraAppScreen(): React.JSX.Element {
             // fall back to the native stable copy
           }
           setLatestThumbnail(display);
+          if (latestDeliveredCaptureIDRef.current === event.captureID) {
+            const profileId = event.profileID ?? pending?.profileId;
+            if (!event.processingFallback && profileId) setLastStyledPreview({ profileId, uri: display });
+            if (!event.processingFallback && firstPhotoHintPendingRef.current) {
+              firstPhotoHintPendingRef.current = false;
+              showTransientError(t('onbFirstPhotoHint'));
+            }
+          }
           cameraStateRef.current.lastThumbUri = display;
           saveCameraState({ lastThumbUri: display });
         })();
@@ -952,6 +971,7 @@ function CameraAppScreen(): React.JSX.Element {
   // The authoritative commit still happens exactly once per gesture in
   // handleApertureSettle — per-move calls are fire-and-forget by design.
   const handleApertureChange = (aperture: number) => {
+    setApertureHintPending(false);
     if (!apertureVariable) {
       // Fixed devices without the demo ring never move.
       return;
@@ -1248,11 +1268,22 @@ function CameraAppScreen(): React.JSX.Element {
     [isPro, trialUsed]
   );
 
-  const handleCompleteOnboarding = useCallback(() => {
+  const handleCompleteOnboarding = useCallback((profileId: string) => {
+    const profile = profiles.find((item) => item.id === profileId);
+    if (profile) handleSelectProfile(profile);
+    startAfterOnboardingRef.current = permissionState === 'notDetermined';
+    firstPhotoHintPendingRef.current = true;
+    setApertureHintPending(true);
     cameraStateRef.current.completedOnboardingVersion = CURRENT_ONBOARDING_VERSION;
     saveCameraState({ completedOnboardingVersion: CURRENT_ONBOARDING_VERSION });
     setShowOnboarding(false);
-  }, []);
+  }, [profiles, handleSelectProfile, permissionState]);
+
+  useEffect(() => {
+    if (!apertureHintPending || !isCameraRunning || !apertureVariable || showOnboarding) return;
+    const timer = setTimeout(() => setApertureHintPending(false), 5000);
+    return () => clearTimeout(timer);
+  }, [apertureHintPending, isCameraRunning, apertureVariable, showOnboarding]);
 
   const finalizeRadialSelection = useCallback(
     (releaseX?: number, releaseY?: number) => {
@@ -1625,6 +1656,7 @@ function CameraAppScreen(): React.JSX.Element {
           {/* Bottom control stack: the hero aperture ring + shutter row. */}
           {isCameraRunning && !permissionOverlayVisible && (
             <View style={[styles.bottomControlsContainer, { backgroundColor: skin.chrome }]} pointerEvents="box-none">
+              {apertureHintPending && apertureVariable && !showOnboarding ? <Text pointerEvents="none" style={styles.onboardingApertureHint}>{t('onbApertureHint')}</Text> : null}
               {
                 // Aperture ring: draggable ONLY on a variable-iris lens; a fixed
                 // lens shows its real mechanical aperture (no drag, no simulation).
@@ -1758,8 +1790,14 @@ function CameraAppScreen(): React.JSX.Element {
           <OnboardingView
             visible={showOnboarding}
             profiles={profiles}
-            apertureRange={apertureVariable ? apertureRange : null}
+            finder={finder}
             onComplete={handleCompleteOnboarding}
+            onDismiss={() => {
+              if (startAfterOnboardingRef.current) {
+                startAfterOnboardingRef.current = false;
+                handleEnableCamera();
+              }
+            }}
           />
 
           {/* Camera 18 Pro paywall — intent-gated only (exhausted shutter / explicit
@@ -1767,7 +1805,13 @@ function CameraAppScreen(): React.JSX.Element {
           <PaywallModal
             visible={MONETIZATION_ENABLED && paywall !== null}
             source={paywall?.source ?? null}
+            photoUri={paywall?.profileId === lastStyledPreview?.profileId ? lastStyledPreview?.uri : null}
             onClose={() => setPaywall(null)}
+            onUseFreeCamera={() => {
+              const free = profiles.find((profile) => profile.id === 'ricoh_negative');
+              if (free) handleSelectProfile(free);
+              setPaywall(null);
+            }}
           />
         </View>
       </ThreeFingerGestureDetector>
@@ -1793,6 +1837,7 @@ export default function App(): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
+  onboardingApertureHint: { position: 'absolute', top: 0, alignSelf: 'center', color: 'rgba(255,255,255,0.85)', fontSize: 12, zIndex: 2 },
   rootContainer: {
     flex: 1,
     backgroundColor: '#000000',

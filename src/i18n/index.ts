@@ -103,6 +103,8 @@ const en = {
   onbSkip: 'Skip',
   onbContinue: 'Continue',
   onbStartShooting: 'Start Shooting',
+  onbApertureHint: 'Turn the aperture to explore this camera.',
+  onbFirstPhotoHint: 'Tap the thumbnail to see your first photo.',
 
   // Paywall
   paywallTitle: 'Unlock Every Camera.',
@@ -113,6 +115,7 @@ const en = {
   paywallKeepFounding: 'Keep your founding price while subscribed.',
   paywallUnlockCta: 'Unlock Camera 18 Pro',
   paywallRestore: 'Restore Purchases',
+  paywallUseFreeCamera: 'Continue with GRIT N for free',
   paywallRetry: 'Retry',
   paywallOfflineHint: "Couldn't load prices. Check your connection (if network was denied, allow it in Settings) and retry.",
   paywallPending: 'Purchase pending — Pro unlocks once it completes.',
@@ -197,6 +200,8 @@ const zh: Record<keyof typeof en, string> = {
   onbSkip: '跳过',
   onbContinue: '继续',
   onbStartShooting: '开始拍摄',
+  onbApertureHint: '转动光圈，探索这台相机。',
+  onbFirstPhotoHint: '点击缩略图，看看你的第一张作品。',
 
   paywallTitle: '解锁全部相机。',
   paywallSubtitle: '无限使用全部 8 个相机性格。',
@@ -206,6 +211,7 @@ const zh: Record<keyof typeof en, string> = {
   paywallKeepFounding: '订阅期间一直保留你的首发价。',
   paywallUnlockCta: '解锁 Camera 18 Pro',
   paywallRestore: '恢复购买',
+  paywallUseFreeCamera: '继续使用 GRIT N 免费拍摄',
   paywallRetry: '重试',
   paywallOfflineHint: '价格加载失败。请检查网络（若曾拒绝网络权限，请到系统设置中允许）后重试。',
   paywallPending: '购买待处理——完成后自动解锁 Pro。',

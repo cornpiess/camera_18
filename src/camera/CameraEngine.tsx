@@ -119,6 +119,7 @@ export class CameraEngineError extends Error {
 }
 
 type NativeCameraEngine = {
+  renderOnboardingExample(uri: string, profile: CameraProfile): Promise<string>;
   ackPhotoOutcome(id: string): Promise<void>;
   getCaptureState(): Promise<CaptureState>;
   setFocalStop(lens: string, zoom: number, mm: number): Promise<void>;
@@ -230,6 +231,7 @@ function unavailableError(): CameraEngineError {
 }
 
 const unavailableModule: NativeCameraEngine = {
+  renderOnboardingExample: () => Promise.reject(unavailableError()),
   ackPhotoOutcome: () => Promise.reject(unavailableError()),
   getCaptureState: () => Promise.reject(unavailableError()),
   setFocalStop: () => Promise.reject(unavailableError()),
@@ -339,6 +341,7 @@ export const addPhotoDeliveryStateListener = (cb: (event: PhotoDeliveryState) =>
 
 /** Functional native API; also convenient for call sites that prefer a namespace object. */
 export const CameraEngine = {
+  renderOnboardingExample: (uri: string, profile: CameraProfile) => NativeModule.renderOnboardingExample(uri, profile),
   ackPhotoOutcome, getCaptureState, setFocalStop, getPhotoDeliveryState, showPhotoRecovery, retryPhotoSaving, showLatestPhoto, openPhotosApp, getLatestPhoto,
   startCamera,
   stopCamera,

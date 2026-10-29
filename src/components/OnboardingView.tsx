@@ -1,337 +1,110 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import * as Haptics from 'expo-haptics';
-import { t } from '../i18n';
-import type { CameraProfile } from '../profiles/types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Asset } from 'expo-asset';
+import { CameraEngine } from '../camera/CameraEngine';
+import { appLang } from '../i18n';
 import { MONETIZATION_ENABLED } from '../monetization/MonetizationConfig';
-import { markerGlyph } from './types';
+import type { CameraProfile } from '../profiles/types';
 
+// Preserve version 1: returning users who finished the old intro are not interrupted.
 export const CURRENT_ONBOARDING_VERSION = 1;
+const EXAMPLE = require('../../assets/onboarding/source.png');
+const IDS = ['ricoh_negative', 'canon_portrait', 'leica_m9'] as const;
+const DESCRIPTIONS = {
+  ricoh_negative: ['Cool negative', '清冷负片'],
+  canon_portrait: ['Warm portrait', '温暖人像'],
+  leica_m9: ['Rich documentary', '浓郁纪实'],
+} as const;
 
-export interface OnboardingViewProps {
-  readonly visible: boolean;
-  readonly profiles: readonly CameraProfile[];
-  /** Live hardware aperture range (honesty: page 1 shows what the product supports). */
-  readonly apertureRange: { min: number; max: number } | null;
-  readonly onComplete: () => void;
+interface Props {
+  visible: boolean;
+  profiles: readonly CameraProfile[];
+  finder: { width: number; height: number };
+  onComplete: (profileId: string) => void;
+  onDismiss: () => void;
 }
 
-const fLabel = (value: number | undefined | null): string =>
-  typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? `ƒ/${value.toFixed(1).replace(/\.0$/, '')}`
-    : 'ƒ/x';
-
-/**
- * First-launch onboarding (spec §8–§10): exactly 3 pages, NO purchase button, and
- * NO paywall afterwards — the user reaches the camera and the real product first.
- * Completion (or Skip) persists completedOnboardingVersion and never shows again.
- */
-export const OnboardingView: React.FC<OnboardingViewProps> = ({
-  visible,
-  profiles,
-  apertureRange,
-  onComplete,
-}) => {
-  const [page, setPage] = useState<number>(0);
-  const marker = useRef(new Animated.Value(0)).current;
-  // Free 1.0.0 build (MONETIZATION_ENABLED off): page 3 IS the free-model page —
-  // it ships only with membership enabled, so onboarding runs as 2 pages.
-  const pageCount = MONETIZATION_ENABLED ? 3 : 2;
+export function OnboardingView({ visible, profiles, finder, onComplete, onDismiss }: Props) {
+  const [selected, setSelected] = useState<string>(IDS[0]);
+  const [images, setImages] = useState<Record<string, string>>({});
+  const [original, setOriginal] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const options = useMemo(() => IDS.map(id => profiles.find(p => p.id === id)).filter((p): p is CameraProfile => !!p), [profiles]);
+  const zh = appLang === 'zh';
 
   useEffect(() => {
-    if (!visible) return;
-    setPage(0);
-  }, [visible]);
+    if (!visible || options.length === 0) return;
+    let active = true;
+    void (async () => {
+      try {
+        const asset = Asset.fromModule(EXAMPLE);
+        await asset.downloadAsync();
+        if (!asset.localUri) throw new Error('Example image unavailable');
+        // Serialize full-resolution renders to bound memory; never block taking photos.
+        for (const profile of options) {
+          if (!active) return;
+          const uri = await CameraEngine.renderOnboardingExample(asset.localUri, profile as unknown as Record<string, unknown>);
+          if (active) setImages(current => ({ ...current, [profile.id]: uri }));
+        }
+      } catch {
+        if (active) setFailed(true);
+      }
+    })();
+    return () => { active = false; };
+  }, [visible, options]);
 
-  // Page 1 ambient motion: the aperture marker sweeps the continuous range forever.
-  useEffect(() => {
-    if (!visible) return;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(marker, { toValue: 1, duration: 2600, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(marker, { toValue: 0, duration: 2600, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [visible, marker, page]);
-
-  const finish = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    onComplete();
-  };
-
-  const advance = () => {
-    Haptics.selectionAsync().catch(() => {});
-    if (page >= pageCount - 1) {
-      finish();
-    } else {
-      setPage(page + 1);
-    }
-  };
-
-  // Page 2 grid: the 8 camera characters (icon glyph + short name + own accent).
-  const gridProfiles = useMemo(() => profiles.slice(0, 8), [profiles]);
-  const markerLeft = marker.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['8%', '88%'],
-    extrapolate: 'clamp',
-  });
-
+  const selectedProfile = options.find(p => p.id === selected);
+  const image = images[selected];
   return (
-    <Modal animationType="fade" onRequestClose={finish} statusBarTranslucent visible={visible}>
-      <View style={styles.root}>
-        {page < pageCount - 1 ? (
-          <Pressable accessibilityLabel={t('onbSkip')} accessibilityRole="button" hitSlop={12} onPress={finish} style={styles.skip}>
-            <Text style={styles.skipText}>{t('onbSkip')}</Text>
-          </Pressable>
-        ) : null}
-
-        <View style={styles.dotsRow}>
-          {Array.from({ length: pageCount }, (_, i) => (
-            <View key={i} style={[styles.dot, i === page && styles.dotActive]} />
-          ))}
+    <Modal animationType="fade" onRequestClose={() => onComplete(selected)} onDismiss={onDismiss} statusBarTranslucent visible={visible}>
+      <ScrollView contentContainerStyle={styles.page} style={styles.root}>
+        <Text style={styles.title}>{zh ? '用 iPhone，拍出相机的性格。' : 'Give your iPhone a camera character.'}</Text>
+        <Text style={styles.subtitle}>{zh ? '自然光影，细腻质感。' : 'Natural light. Refined detail.'}</Text>
+        <View style={[styles.picture, { width: finder.width, height: finder.height }]}>
+          <Image source={original || !image ? EXAMPLE : { uri: image }} style={styles.image} resizeMode="cover" />
+          <Text style={styles.sample}>{original || !image ? (zh ? '示例原图' : 'EXAMPLE ORIGINAL') : (zh ? '示例' : 'EXAMPLE')}</Text>
+          {image ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={zh ? '切换示例原图与相机效果' : 'Toggle example original and camera look'} onPressIn={() => setOriginal(true)} onPressOut={() => setOriginal(false)} onAccessibilityTap={() => setOriginal(value => !value)} style={styles.compare}>
+              <Text style={styles.compareText}>{original ? (zh ? '示例原图' : 'ORIGINAL') : (zh ? '按住对比' : 'HOLD TO COMPARE')}</Text>
+            </Pressable>
+          ) : !failed ? <View style={styles.loading}><ActivityIndicator color="#fff" /></View> : null}
         </View>
-
-        {page === 0 ? (
-          <View style={styles.page}>
-            <Text style={styles.title}>{t('onbApertureTitle')}</Text>
-            <Text style={styles.subtitle}>{t('onbApertureSubtitle')}</Text>
-            {/* Continuous-aperture visual in the product's own language: a real
-                marker sweeping between the REAL supported f-stops of this build. */}
-            <View style={styles.apertureStage}>
-              <Text style={styles.apertureEnd}>{fLabel(apertureRange?.min)}</Text>
-              <View style={styles.apertureTrack}>
-                <View style={styles.apertureLine} />
-                <Animated.View style={[styles.apertureMarker, { left: markerLeft }]} />
-              </View>
-              <Text style={styles.apertureEnd}>{fLabel(apertureRange?.max)}</Text>
-            </View>
-          </View>
-        ) : null}
-
-        {page === 1 ? (
-          <View style={styles.page}>
-            <Text style={styles.title}>{t('onbCharactersTitle')}</Text>
-            <Text style={styles.subtitle}>{t('onbCharactersSubtitle')}</Text>
-            <View style={styles.characterGrid}>
-              {gridProfiles.map((profile) => (
-                <View key={profile.id} style={styles.characterCell}>
-                  <Text style={[styles.characterGlyph, { color: profile.ui?.accent || '#FFFFFF' }]}>
-                    {markerGlyph(profile.ui?.markerStyle)}
-                  </Text>
-                  <Text style={styles.characterName}>{profile.ui?.shortName ?? profile.id}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        ) : null}
-
-        {page === 2 ? (
-          <View style={styles.page}>
-            <Text style={styles.title}>{t('onbTrialTitle')}</Text>
-            <Text style={styles.subtitle}>{t('onbTrialGritYours')}</Text>
-            <Text style={styles.subtitle}>{t('onbTrialTryOthers')}</Text>
-            <View style={[styles.tierCard, styles.tierCardGrit]}>
-              <Text style={styles.tierCardName}>GRIT N</Text>
-              <Text style={styles.tierCardMeta}>{t('onbTrialUnlimited')}</Text>
-            </View>
-            <View style={styles.tierCard}>
-              <Text style={styles.tierCardNameDim}>{t('onbTrialFreeShots')}</Text>
-              <View style={styles.shotDotsRow}>
-                <View style={styles.shotDot} />
-                <View style={styles.shotDot} />
-                <View style={styles.shotDot} />
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        <Pressable
-          accessibilityRole="button"
-          onPress={advance}
-          style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]}
-        >
-          <Text style={styles.ctaText}>{page >= pageCount - 1 ? t('onbStartShooting') : t('onbContinue')}</Text>
+        {failed ? <Text style={styles.note}>{zh ? '示例暂不可用，仍可直接拍照。' : 'Example unavailable. You can still start shooting.'}</Text> : null}
+        <View style={styles.options}>
+          {options.map(profile => {
+            const id = profile.id as keyof typeof DESCRIPTIONS;
+            const active = selected === id;
+            return <Pressable key={id} accessibilityRole="radio" accessibilityState={{ selected: active }} onPress={() => { setSelected(id); setOriginal(false); }} style={[styles.option, active && { borderColor: profile.ui?.accent || '#fff' }]}>
+              <Text style={styles.optionName}>{profile.name}</Text>
+              <Text style={styles.optionDescription}>{DESCRIPTIONS[id][zh ? 1 : 0]}</Text>
+            </Pressable>;
+          })}
+        </View>
+        <Pressable accessibilityRole="button" onPress={() => onComplete(selected)} style={[styles.cta, { backgroundColor: selectedProfile?.ui?.accent || '#E8B84B' }]}>
+          <Text style={styles.ctaText}>{zh ? '用这台相机拍照' : 'Shoot with this camera'}</Text>
         </Pressable>
-      </View>
+        {MONETIZATION_ENABLED ? <Text style={styles.note}>{zh ? 'GRIT N 永久免费 · 其他相机各试拍 3 张' : 'GRIT N is free · Try each other camera with 3 shots'}</Text> : null}
+      </ScrollView>
     </Modal>
   );
-};
-
-const ACCENT = '#E8B84B';
+}
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#0A0A0C',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 32,
-  },
-  skip: {
-    position: 'absolute',
-    top: 64,
-    right: 24,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  skipText: {
-    color: 'rgba(255, 255, 255, 0.55)',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  dotsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 36,
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.22)',
-  },
-  dotActive: {
-    backgroundColor: ACCENT,
-  },
-  page: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  title: {
-    color: '#FFFFFF',
-    fontSize: 28,
-    fontWeight: '800',
-    textAlign: 'center',
-    lineHeight: 36,
-    letterSpacing: 0.2,
-  },
-  subtitle: {
-    color: 'rgba(255, 255, 255, 0.64)',
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 12,
-    lineHeight: 20,
-  },
-  apertureStage: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: 320,
-    marginTop: 56,
-    gap: 12,
-  },
-  apertureEnd: {
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: 15,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  apertureTrack: {
-    flex: 1,
-    height: 40,
-    justifyContent: 'center',
-  },
-  apertureLine: {
-    height: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-    borderRadius: 1,
-  },
-  apertureMarker: {
-    position: 'absolute',
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: ACCENT,
-    top: 13,
-    shadowColor: ACCENT,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
-  },
-  characterGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    marginTop: 44,
-    maxWidth: 320,
-    gap: 18,
-  },
-  characterCell: {
-    alignItems: 'center',
-    width: 64,
-  },
-  characterGlyph: {
-    fontSize: 20,
-    marginBottom: 6,
-  },
-  characterName: {
-    color: 'rgba(255, 255, 255, 0.78)',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-  },
-  tierCard: {
-    width: '100%',
-    maxWidth: 280,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    paddingVertical: 18,
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  tierCardGrit: {
-    borderColor: 'rgba(232, 184, 75, 0.6)',
-    backgroundColor: 'rgba(232, 184, 75, 0.08)',
-  },
-  tierCardName: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  tierCardNameDim: {
-    color: 'rgba(255, 255, 255, 0.72)',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  tierCardMeta: {
-    color: ACCENT,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.4,
-    marginTop: 6,
-  },
-  shotDotsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-  shotDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
-  },
-  cta: {
-    position: 'absolute',
-    bottom: 72,
-    borderRadius: 18,
-    backgroundColor: ACCENT,
-    paddingVertical: 16,
-    paddingHorizontal: 48,
-  },
-  ctaPressed: {
-    opacity: 0.75,
-  },
-  ctaText: {
-    color: '#141414',
-    fontSize: 16,
-    fontWeight: '800',
-  },
+  root: { flex: 1, backgroundColor: '#0A0A0C' },
+  page: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 46 },
+  title: { color: '#fff', fontSize: 23, fontWeight: '700', textAlign: 'center' },
+  subtitle: { color: 'rgba(255,255,255,0.7)', fontSize: 14, marginTop: 8, marginBottom: 16, textAlign: 'center' },
+  picture: { borderRadius: 28, overflow: 'hidden', backgroundColor: '#202023' },
+  image: { width: '100%', height: '100%' },
+  sample: { position: 'absolute', top: 14, left: 14, color: '#fff', fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 9, paddingVertical: 5, overflow: 'hidden', borderRadius: 8 },
+  compare: { position: 'absolute', right: 8, bottom: 8, minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 14, backgroundColor: 'rgba(0,0,0,0.65)' },
+  compareText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  loading: { position: 'absolute', right: 14, bottom: 14 },
+  options: { width: '90%', maxWidth: 390, flexDirection: 'row', gap: 8, marginTop: 14 },
+  option: { flex: 1, minHeight: 58, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 12, paddingHorizontal: 3 },
+  optionName: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  optionDescription: { color: 'rgba(255,255,255,0.7)', fontSize: 11, marginTop: 4, textAlign: 'center' },
+  cta: { marginTop: 16, width: '90%', maxWidth: 390, minHeight: 50, justifyContent: 'center', alignItems: 'center', borderRadius: 14 },
+  ctaText: { color: '#111', fontSize: 15, fontWeight: '700' },
+  note: { color: 'rgba(255,255,255,0.65)', fontSize: 11, marginTop: 10, textAlign: 'center' },
 });

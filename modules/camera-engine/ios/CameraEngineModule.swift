@@ -715,6 +715,7 @@ private final class SettleOnceGate {
 public final class CameraEngineModule: Module {
   private weak var activeView: CameraEngineView?
   private let apertureController = ApertureController()
+  private let demoRenderQueue = DispatchQueue(label: "camera-engine.onboarding-render", qos: .userInitiated)
 
   public func definition() -> ModuleDefinition {
     Name("CameraEngine")
@@ -767,6 +768,33 @@ public final class CameraEngineModule: Module {
       }
       OnViewDidUpdateProps { view in
         self.activeView = view
+      }
+    }
+
+    // Render the bundled example using the same renderer and shared CIContext as
+    // captured photos. This does not start the camera or touch capture state.
+    AsyncFunction("renderOnboardingExample") { (uri: String, profile: [String: Any], promise: Promise) in
+      self.demoRenderQueue.async {
+        guard let url = URL(string: uri), url.isFileURL,
+              let source = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+          self.reject(promise, .processingFailed); return
+        }
+        if let lut = (profile["color"] as? [String: Any])?["lut"] as? String,
+           !lut.isEmpty, LUTLoader.load(lut) == nil {
+          self.reject(promise, .processingFailed); return
+        }
+        let compiled = CameraDNARenderer.compile(profile, normalizer: CameraInputNormalizer.definition(for: .processedPhoto))
+        let scene = compiled.unified ? CameraSceneContext.analyze(source) : .neutral
+        let image = CameraDNARenderer.apply(compiled, to: source, finalPhoto: true, scene: scene)
+        guard let cg = CameraEngineGPU.ciContext.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: CameraEngineGPU.sRGBColorSpace),
+              let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else {
+          self.reject(promise, .processingFailed); return
+        }
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("camera18-example-\(UUID().uuidString).jpg")
+        do {
+          try data.write(to: output, options: .atomic)
+          DispatchQueue.main.async { promise.resolve(output.absoluteString) }
+        } catch { self.reject(promise, .processingFailed) }
       }
     }
 
