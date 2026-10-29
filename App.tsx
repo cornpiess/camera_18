@@ -1661,36 +1661,12 @@ function CameraAppScreen(): React.JSX.Element {
                       uri={latestThumbnail}
                       onLongPress={() => { void CameraEngine.showPhotoRecovery().catch(() => showTransientError(t('errGeneric'))); }}
                       onPress={() => {
-                        if (photoViewerOpenRef.current) return;
-                        photoViewerOpenRef.current = true;
-                        const names = Object.fromEntries(profiles.map((profile) => [profile.id, profile.displayName ?? profile.name]));
-                        void CameraEngine.showLatestPhoto(names).then(async (result) => {
-                          if (!result.deleted) return;
-                          if (result.captureID === latestDeliveredCaptureIDRef.current) {
-                            setLatestThumbnail(null);
-                            cameraStateRef.current.lastThumbUri = null;
-                            saveCameraState({ lastThumbUri: null });
-                          }
-                          const latest = await CameraEngine.getLatestPhoto();
-                          if (latest && ((latest.capturedAt ?? 0) > latestDeliveredCaptureAtRef.current
-                            || (latest.previewDeleted && (latest.capturedAt ?? 0) === latestDeliveredCaptureAtRef.current))) {
-                            latestDeliveredCaptureAtRef.current = latest.capturedAt ?? 0;
-                            latestDeliveredCaptureIDRef.current = latest.captureID ?? null;
-                            const thumbnail = latest.previewDeleted ? null : latest.thumbnailUri ?? null;
-                            setLatestThumbnail(thumbnail);
-                            cameraStateRef.current.lastThumbUri = thumbnail;
-                            saveCameraState({ lastThumbUri: thumbnail });
-                          }
-                        }).catch((error: unknown) => {
-                          // TestFlight has no console: like the save-failure banner,
-                          // name the native error code so production reports can
-                          // pinpoint WHICH stage of showLatest rejected (busy /
-                          // missing manifest / decode / presenter).
-                          const code = error instanceof CameraEngineError ? error.code
-                            : (typeof (error as { code?: string })?.code === 'string' ? (error as { code: string }).code : String(error ?? 'unknown'));
-                          showTransientError(`${t('photoUnavailable')}\n${code}`);
-                        })
-                          .finally(() => { photoViewerOpenRef.current = false; });
+                        // Product decision (2026-10-29): tapping the thumbnail opens the
+                        // SYSTEM Photos app via Apple's public photos-redirect:// link.
+                        // The in-app full-screen viewer stayed unopenable across builds
+                        // (ERR_NO_ACTIVE_VIEW twice); Apple's own library is the
+                        // platform-supported, zero-maintenance path.
+                        void CameraEngine.openPhotosApp().catch(() => showTransientError(t('errGeneric')));
                       }}
                     />
                   ) : null}

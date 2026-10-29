@@ -6,6 +6,10 @@
 
 ---
 
+## 2026-10-29 产品决策：点缩略图改跳系统相册（放弃应用内 viewer 入口）
+
+用户实机两轮 ERR_NO_ACTIVE_VIEW 后决定换路：左下角缩略图保留（仍显示最新一张），点击改为**直接跳系统相册**——新增原生 `openPhotosApp`（Apple 公开 `photos-redirect://` 深链，iOS 13.4+；无公开 API 可定位到特定资产，打开图库本体即平台支持行为）。App.tsx 的 onPress 从 showLatestPhoto 全链（含 deleted 清 chip 逻辑）替换为 openPhotosApp 一次调用；长按 chip 的照片状态面板不变；启动恢复缩略图的 getLatestPhoto 不变。**原生 viewer（CameraPhotoViewer/showLatest）与 photoViewerOpenRef 门禁保留在代码库但不再有 JS 入口**——上一轮的 hostView 锚点/真实容器 cache/内容解码兜底/分阶段错误码修复全部保留（若将来恢复应用内查看，这些仍有效）。photos-redirect 跳转待真机验收。
+
 ## 2026-10-29 ERR_NO_ACTIVE_VIEW 二轮：信息黑洞修复 + presenter 地面真相锚点
 
 用户实机反馈（build 108 = 8afc57f 时代）：预览仍打不开，横幅仍是 ERR_NO_ACTIVE_VIEW。复盘发现上一轮修复自带**信息黑洞**：showLatest 的 catch 丢弃了 do 块里 throw 的分阶段错误码，且「快照 nil」与「presenter nil」合并在同一 guard 里全部报 noActiveView——所以 108 上的这个码**不能证明**是 presenter 问题，同样可能是快照失败（最典型：107 交付的旧照片在磁盘上是 HEIC 字节 + `.heif` 扩展名，108 的 deliver 清理尚未触发，点旧 chip 仍解码失败）。本轮修复：① catch 保留真实错误码、快照与 presenter 拆分 guard（黑洞性问题不再复发）；② viewer cache 文件按 CGImageSource 探测的**真实容器**命名（不信任磁盘扩展名，旧 .heif 遗留文件直接治好）；③ UIImage 按路径解码失败时回退 CGImageSourceCreateImageAtIndex 内容解码（零路径依赖兜底）；④ presenter() 第一优先从活的 CameraEngineView 反查 window（didMoveToWindow 注册 weak hostView——屏幕上可见的 view 是 scene API 报告失败时的地面真相），scene 降级路径保留为回退。注意：若 108 实机未安装 8afc05c2 之后的构建，此前的 presenter 降级也未生效——请以最新构建验收。

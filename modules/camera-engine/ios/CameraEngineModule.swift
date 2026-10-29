@@ -843,6 +843,20 @@ public final class CameraEngineModule: Module {
         }
       }
     }
+    AsyncFunction("openPhotosApp") { (promise: Promise) in
+      DispatchQueue.main.async {
+        // photos-redirect:// is Apple's public deep link into the Photos app
+        // (iOS 13.4+). No public URL targets a specific asset — opening the
+        // library itself is the platform-supported behavior.
+        guard let url = URL(string: "photos-redirect://") else {
+          self.reject(promise, .processingFailed); return
+        }
+        UIApplication.shared.open(url, options: [:]) { success in
+          if success { promise.resolve(nil) }
+          else { self.reject(promise, .processingFailed) }
+        }
+      }
+    }
     AsyncFunction("getLatestPhoto") { (promise: Promise) in
       CameraPhotoStore.shared.latest { promise.resolve($0) }
     }

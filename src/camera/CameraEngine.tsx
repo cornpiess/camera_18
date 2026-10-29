@@ -126,6 +126,8 @@ type NativeCameraEngine = {
   showPhotoRecovery(): Promise<void>;
   retryPhotoSaving(): Promise<void>;
   showLatestPhoto(profileNames: Record<string, string>): Promise<{ deleted: boolean; captureID: string }>;
+  /** Opens the system Photos app via Apple's public photos-redirect:// link. */
+  openPhotosApp(): Promise<void>;
   getLatestPhoto(): Promise<PhotoProcessedEvent | null>;
   startCamera(): Promise<boolean>;
   stopCamera(): Promise<void>;
@@ -235,6 +237,7 @@ const unavailableModule: NativeCameraEngine = {
   showPhotoRecovery: () => Promise.reject(unavailableError()),
   retryPhotoSaving: () => Promise.reject(unavailableError()),
   showLatestPhoto: () => Promise.reject(unavailableError()),
+  openPhotosApp: () => Promise.reject(unavailableError()),
   getLatestPhoto: () => Promise.reject(unavailableError()),
   startCamera: () => Promise.reject(unavailableError()),
   stopCamera: () => Promise.reject(unavailableError()),
@@ -282,6 +285,7 @@ export const getPhotoDeliveryState = (): Promise<PhotoDeliveryState> => typed(Na
 export const showPhotoRecovery = (): Promise<void> => typed(NativeModule.showPhotoRecovery());
 export const retryPhotoSaving = (): Promise<void> => typed(NativeModule.retryPhotoSaving());
 export const showLatestPhoto = (profileNames: Record<string, string>): Promise<{ deleted: boolean; captureID: string }> => typed(NativeModule.showLatestPhoto(profileNames));
+export const openPhotosApp = (): Promise<void> => typed(NativeModule.openPhotosApp());
 export const getLatestPhoto = (): Promise<PhotoProcessedEvent | null> => typed(NativeModule.getLatestPhoto());
 export const setAperture = (fStop: number): Promise<void> => typed(NativeModule.setAperture(fStop));
 export const setApertureCoalesced = (fStop: number): Promise<void> => typed(NativeModule.setApertureCoalesced(fStop));
@@ -335,7 +339,7 @@ export const addPhotoDeliveryStateListener = (cb: (event: PhotoDeliveryState) =>
 
 /** Functional native API; also convenient for call sites that prefer a namespace object. */
 export const CameraEngine = {
-  ackPhotoOutcome, getCaptureState, setFocalStop, getPhotoDeliveryState, showPhotoRecovery, retryPhotoSaving, showLatestPhoto, getLatestPhoto,
+  ackPhotoOutcome, getCaptureState, setFocalStop, getPhotoDeliveryState, showPhotoRecovery, retryPhotoSaving, showLatestPhoto, openPhotosApp, getLatestPhoto,
   startCamera,
   stopCamera,
   capturePhoto,
