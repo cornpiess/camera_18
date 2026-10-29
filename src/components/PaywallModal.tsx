@@ -18,6 +18,7 @@ export interface PaywallModalProps {
   /** Analytics-free but kept for diagnostics: why the paywall appeared. */
   readonly source: PaywallSource | null;
   readonly onClose: () => void;
+  readonly onUseFreeCamera: () => void;
 }
 
 const LEGAL_URLS = {
@@ -34,7 +35,7 @@ const MANAGE_FALLBACK_URL = 'https://apps.apple.com/account/subscriptions';
  * FOUNDING PRICE badge, which hides itself automatically once the configured
  * end date passes (old binaries stop advertising a dead offer).
  */
-export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onClose }) => {
+export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onClose, onUseFreeCamera }) => {
   const { isPro, products, productsLoaded, reloadProducts, purchase, restorePurchases } = useMonetization();
   const [selected, setSelected] = useState<string>(YEARLY_PRODUCT_ID);
   const [busy, setBusy] = useState<boolean>(false);
@@ -186,6 +187,12 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
 
           {statusLine ? <Text style={styles.statusLine}>{statusLine}</Text> : null}
 
+          {source === 'trialExhausted' ? (
+            <Pressable accessibilityRole="button" disabled={busy} onPress={onUseFreeCamera} style={styles.freeCamera}>
+              <Text style={styles.freeCameraText}>{t('paywallUseFreeCamera')}</Text>
+            </Pressable>
+          ) : null}
+
           <View style={styles.footerRow}>
             {isPro ? (
               <Pressable hitSlop={6} onPress={handleManage}>
@@ -215,6 +222,8 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ visible, source, onC
 const ACCENT = '#E8B84B';
 
 const styles = StyleSheet.create({
+  freeCamera: { alignItems: 'center', paddingVertical: 10, minHeight: 44, justifyContent: 'center' },
+  freeCameraText: { color: 'rgba(255, 255, 255, 0.8)', fontSize: 13, fontWeight: '600' },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.72)',

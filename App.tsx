@@ -866,9 +866,13 @@ function CameraAppScreen(): React.JSX.Element {
         else showTransientError(t('photoRetrySaving'));
         return;
       }
-      const settled = !trialProfile || !receiptID || commitTrialShotRef.current(trialProfile, receiptID);
+      // A fallback delivered only Apple's original, not the requested camera look.
+      // Release the reservation so a failed style does not spend a trial shot.
+      const settled = !trialProfile || !receiptID || (event.processingFallback
+        ? rollbackTrialShotRef.current(trialProfile, receiptID)
+        : commitTrialShotRef.current(trialProfile, receiptID));
       if (settled) acknowledge();
-      if (pending) {
+      if (pending && !event.processingFallback) {
         const remaining = TRIAL_LIMIT - (trialUsedRef.current[pending.profileId] ?? 0) - 1;
         recordDiag('info', `trial: committed (${pending.profileId}, remaining=${remaining})`);
         // The 3rd (last) free shot just saved: a LIGHT, non-blocking hint — the
@@ -1768,6 +1772,11 @@ function CameraAppScreen(): React.JSX.Element {
             visible={MONETIZATION_ENABLED && paywall !== null}
             source={paywall?.source ?? null}
             onClose={() => setPaywall(null)}
+            onUseFreeCamera={() => {
+              const free = profiles.find((profile) => profile.id === 'ricoh_negative');
+              if (free) handleSelectProfile(free);
+              setPaywall(null);
+            }}
           />
         </View>
       </ThreeFingerGestureDetector>
