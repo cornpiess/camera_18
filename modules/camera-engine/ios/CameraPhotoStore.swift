@@ -659,7 +659,7 @@ final class CameraPhotoStore {
 
   /// Pin a full-size copy before presentation. Delivering another pending photo
   /// can clean derived latest files without changing/deleting this viewer's image.
-  func showLatest(profileNames: [String: String], completion: @escaping (Result<[String: Any], CameraEngineError>) -> Void) {
+  func showLatest(profileNames: [String: String], fallbackPresenter: @escaping () -> UIViewController?, completion: @escaping (Result<[String: Any], CameraEngineError>) -> Void) {
     DispatchQueue.main.async {
       guard !self.viewerOpening, !CameraOrientationSubscriber.viewingPhoto else { completion(.failure(.captureBusy)); return }
       self.viewerOpening = true
@@ -723,7 +723,7 @@ final class CameraPhotoStore {
           // and a presented-chain tail may legitimately have no loaded view — the
           // old triple guard (dismiss/present/window) rejected a presenter the
           // system would have happily used. Only a missing presenter is fatal.
-          guard let presenter = self.presenter() else { completion(.failure(.noActiveView)); return }
+          guard let presenter = self.presenter() ?? fallbackPresenter() else { completion(.failure(.noActiveView)); return }
           let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
             self.deleteViewedPhoto(facts, completion: callback)
           }, onClose: { deleted in
@@ -788,6 +788,19 @@ final class CameraPhotoStore {
   weak var hostView: UIView?
 
   private func presenter() -> UIViewController? {
+    // Resolve the controller actually owning the attached native view before
+    // looking for a scene root. Expo/RN may embed it in a child controller.
+    if let host = hostView, host.window != nil {
+      var responder: UIResponder? = host
+      while let current = responder {
+        if let controller = current as? UIViewController {
+          var top = controller
+          while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+          return top
+        }
+        responder = current.next
+      }
+    }
     if let root = hostView?.window?.rootViewController {
       var controller = root
       while let next = controller.presentedViewController { controller = next }

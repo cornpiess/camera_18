@@ -6,6 +6,12 @@
 
 ---
 
+## 2026-10-29 恢复应用内最近照片查看
+
+用户要求完整查看最近照片，缩略图重新连接 CameraPhotoViewer：全尺寸固定快照、缩放、分享、信息与 Photos 删除沿用现有实现。保留 GLM 的文件容器检测与分阶段错误处理；presenter 增加附着相机视图的 responder 链及 Expo 当前控制器兜底。历史 ERR_NO_ACTIVE_VIEW 可能包含被吞掉的快照错误，最新 presenter 修复尚无真机证据，不宣称具体根因已确认。CI 编译及设备上的打开、缩放、横竖屏、分享、删除、后台恢复均待验收。
+
+质量对照 0f92c45：GLM 后续提交未改变渲染器、相机配方、.photo/.quality、HEIF优先、12MP直接交付、真实光圈推荐；改动集中在照片文件扩展名、入库事务、恢复、预览及光圈回读复检。编码仍0.95，风格编码失败仍明确回退原图。保存成功但 PhotoKit 未返回 assetID 时，系统删除能力有限。画质及可用性仍须实拍验证。
+
 ## 2026-10-29 产品决策：点缩略图改跳系统相册（放弃应用内 viewer 入口）
 
 用户实机两轮 ERR_NO_ACTIVE_VIEW 后决定换路：左下角缩略图保留（仍显示最新一张），点击改为**直接跳系统相册**——新增原生 `openPhotosApp`（Apple 公开 `photos-redirect://` 深链，iOS 13.4+；无公开 API 可定位到特定资产，打开图库本体即平台支持行为）。App.tsx 的 onPress 从 showLatestPhoto 全链（含 deleted 清 chip 逻辑）替换为 openPhotosApp 一次调用；长按 chip 的照片状态面板不变；启动恢复缩略图的 getLatestPhoto 不变。**原生 viewer（CameraPhotoViewer/showLatest）与 photoViewerOpenRef 门禁保留在代码库但不再有 JS 入口**——上一轮的 hostView 锚点/真实容器 cache/内容解码兜底/分阶段错误码修复全部保留（若将来恢复应用内查看，这些仍有效）。photos-redirect 跳转待真机验收。

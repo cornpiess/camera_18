@@ -836,7 +836,9 @@ public final class CameraEngineModule: Module {
       promise.resolve(nil)
     }
     AsyncFunction("showLatestPhoto") { (profileNames: [String: String], promise: Promise) in
-      CameraPhotoStore.shared.showLatest(profileNames: profileNames) { result in
+      CameraPhotoStore.shared.showLatest(profileNames: profileNames, fallbackPresenter: { [weak self] in
+        self?.appContext?.utilities?.currentViewController()
+      }) { result in
         switch result {
         case .success(let value): promise.resolve(value)
         case .failure(let error): self.reject(promise, error)
