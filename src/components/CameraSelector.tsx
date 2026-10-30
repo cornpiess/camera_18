@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics';
 import type { CameraProfile } from '../profiles/types';
 import { markerGlyph, profileDisplayName } from './types';
 import { appLang, t, tf } from '../i18n';
+import { MONETIZATION_ENABLED, TRIAL_LIMIT } from '../monetization/MonetizationConfig';
 import { IrisGlyph } from './IrisGlyph';
 import { SafeGlassView, isGlassAvailable } from './GlassCard';
 import { ProfileConfigModal } from '../calibration/ProfileConfigModal';
@@ -14,6 +15,7 @@ export interface CameraSelectorProps {
   readonly activeProfileId?: string;
   readonly onSelectProfile: (profile: CameraProfile) => void;
   readonly onClose: () => void;
+  readonly onShowOnboarding?: () => void;
   /**
    * Dim version label at the footer-left (e.g. "v1.0.0"). Also the SECRET TEST-GATE
    * tap target: 7 quick taps reveal the per-camera settings entries (App.tsx owns the
@@ -102,6 +104,7 @@ export const CameraSelector: React.FC<CameraSelectorProps> = ({
   activeProfileId,
   onSelectProfile,
   onClose,
+  onShowOnboarding,
   versionLabel,
   onVersionPress,
   settingsVisible = false,
@@ -122,7 +125,8 @@ export const CameraSelector: React.FC<CameraSelectorProps> = ({
   const panelWidth = Math.min(460, screenWidth - CAPSULE_LEFT * 2);
   const cardWidth = (panelWidth - GRID_PADDING * 2 - CARD_GAP) / 2;
   const cardHeight = Math.round((cardWidth < 148 ? 224 : 196) * Math.max(1, Math.min(fontScale, 1.4)));
-  const headerHeight = Math.round((apertureMode === 'fixed' ? 100 : 76) * Math.max(1, Math.min(fontScale, 1.4)));
+  const showTrialSummary = MONETIZATION_ENABLED && profiles.some(profile => { const access = accessForProfile?.(profile); return access != null && access.kind !== 'unlimited'; });
+  const headerHeight = Math.round(((apertureMode === 'fixed' ? 100 : 76) + (showTrialSummary ? 38 : 0)) * Math.max(1, Math.min(fontScale, 1.4)));
   const footerHeight = FOOTER_HEIGHT * Math.max(1, Math.min(fontScale, 1.4));
   // Keep the active camera visible when the list overflows (24+ profiles).
   const scrollRef = useRef<ScrollView>(null);
@@ -258,6 +262,7 @@ export const CameraSelector: React.FC<CameraSelectorProps> = ({
               <View style={[styles.header, { height: headerHeight }]}>
                 <Text style={styles.title} maxFontSizeMultiplier={1.4}>{t('selectorTitle')}</Text>
                 <Text style={styles.subtitle} maxFontSizeMultiplier={1.4}>{t('selectorSubtitle')}</Text>
+                {showTrialSummary ? <Text style={styles.trialSummary} maxFontSizeMultiplier={1.4}>{tf('cameraTrialSummary', TRIAL_LIMIT)}</Text> : null}
                 {apertureMode === 'fixed' ? <Text style={styles.fixedNote} maxFontSizeMultiplier={1.4}>{t('fixedLensNote')}</Text> : null}
               </View>
               <ScrollView
@@ -392,6 +397,14 @@ export const CameraSelector: React.FC<CameraSelectorProps> = ({
                     <Text style={styles.footerDot}>·</Text>
                   </>
                 ) : null}
+                {onShowOnboarding ? (
+                  <>
+                    <Pressable accessibilityRole="button" onPress={onShowOnboarding} style={({ pressed }) => [styles.footerLink, pressed && styles.footerLinkPressed]}>
+                      <Text style={styles.footerText}>{t('onbReplay')}</Text>
+                    </Pressable>
+                    <Text style={styles.footerDot}>·</Text>
+                  </>
+                ) : null}
                 {LEGAL_LINKS.map((link, index) => (
                   <React.Fragment key={link.key}>
                     {index > 0 ? <Text style={styles.footerDot}>·</Text> : null}
@@ -467,6 +480,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 18, paddingTop: 16, gap: 5 },
   title: { color: '#FFFFFF', fontSize: 19, fontWeight: '700' },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 12 },
+  trialSummary: { color: '#D3C7AA', fontSize: 11, lineHeight: 17 },
   fixedNote: { color: 'rgba(255,255,255,0.55)', fontSize: 10, lineHeight: 14 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: CARD_GAP, padding: GRID_PADDING },
   card: { borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(8,8,12,0.28)', padding: 12 },

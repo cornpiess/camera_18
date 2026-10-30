@@ -305,7 +305,6 @@ function CameraAppScreen(): React.JSX.Element {
   // First-launch onboarding gate (persisted as a VERSION, not a bool).
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
   const startAfterOnboardingRef = useRef(false);
-  const firstPhotoHintPendingRef = useRef(false);
   const [apertureHintPending, setApertureHintPending] = useState(false);
   const [lastStyledPreview, setLastStyledPreview] = useState<{ profileId: string; uri: string } | null>(null);
   // Paywall = user-intent moments ONLY (exhausted shutter press / explicit Pro taps).
@@ -929,10 +928,6 @@ function CameraAppScreen(): React.JSX.Element {
           if (latestDeliveredCaptureIDRef.current === event.captureID) {
             const profileId = event.profileID ?? pending?.profileId;
             if (!event.processingFallback && profileId) setLastStyledPreview({ profileId, uri: display });
-            if (!event.processingFallback && firstPhotoHintPendingRef.current) {
-              firstPhotoHintPendingRef.current = false;
-              showTransientError(t('onbFirstPhotoHint'));
-            }
           }
           cameraStateRef.current.lastThumbUri = display;
           saveCameraState({ lastThumbUri: display });
@@ -1271,10 +1266,10 @@ function CameraAppScreen(): React.JSX.Element {
 
   const handleCompleteOnboarding = useCallback((profileId: string) => {
     const profile = profiles.find((item) => item.id === profileId);
-    if (profile) handleSelectProfile(profile);
+    const firstRun = (cameraStateRef.current.completedOnboardingVersion ?? 0) < CURRENT_ONBOARDING_VERSION;
+    if (firstRun && profile) handleSelectProfile(profile);
     startAfterOnboardingRef.current = permissionState === 'notDetermined';
-    firstPhotoHintPendingRef.current = true;
-    setApertureHintPending(true);
+    if (firstRun) setApertureHintPending(true);
     cameraStateRef.current.completedOnboardingVersion = CURRENT_ONBOARDING_VERSION;
     saveCameraState({ completedOnboardingVersion: CURRENT_ONBOARDING_VERSION });
     setShowOnboarding(false);
@@ -1767,6 +1762,7 @@ function CameraAppScreen(): React.JSX.Element {
             activeProfileId={activeProfile?.id}
             onSelectProfile={handleSelectProfile}
             onClose={() => setIsSelectorOpen(false)}
+            onShowOnboarding={() => { setIsSelectorOpen(false); setShowOnboarding(true); }}
             versionLabel={`v${appConfigJson.expo.version}`}
             onVersionPress={handleVersionSecretTap}
             settingsVisible={testSettingsUnlocked}
@@ -1788,11 +1784,11 @@ function CameraAppScreen(): React.JSX.Element {
             onToggleApertureSideView={() => setApertureSideView((enabled) => !enabled)}
           />
 
-          {/* First-launch onboarding (3 pages; no paywall afterwards by design). */}
+          {/* First-launch onboarding (two scenes; no paywall afterwards by design). */}
           <OnboardingView
             visible={showOnboarding}
             profiles={profiles}
-            finder={finder}
+            apertureMode={capabilitiesRef.current == null ? 'unknown' : apertureVariable ? 'variable' : 'fixed'}
             onComplete={handleCompleteOnboarding}
             onDismiss={() => {
               if (startAfterOnboardingRef.current) {

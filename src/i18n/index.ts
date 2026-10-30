@@ -96,9 +96,23 @@ const en = {
   legalPrivacy: 'Privacy',
   legalSupport: 'Support',
 
-  // Onboarding (3 pages, first launch only)
+  // Onboarding (two scenes, first launch only)
   onbApertureTitle: 'Aperture. In Your Hands.',
-  onbApertureSubtitle: 'Continuous aperture control, built for iPhone photography.',
+  onbApertureSubtitle: 'Turn the aperture. Make every shot your own.',
+  onbQualityTitle: 'The feel of a camera.\nIn every photo.',
+  onbQualitySubtitle: 'Natural light. Subtle detail. Color with character.',
+  onbFixedTitle: 'Photography starts\nwith the lens.',
+  onbFixedSubtitle: 'Your lens has a fixed aperture. Its optics stay true.',
+  onbFixedBadge: 'FIXED APERTURE',
+  onbFixedNote: 'Explore camera characters, then make your first photo.',
+  onbStructureDemo: 'TURN THE RING · IRIS DEMONSTRATION',
+  onbHardwareNote: 'Adjustable aperture requires a supported lens. Fixed lenses keep their actual aperture.',
+  onbCameraCount: '{n} cameras. Each with character.',
+  onbBack: 'Back',
+  onbReplay: 'Camera guide',
+  onbRingLabel: 'Aperture ring demonstration',
+  onbRingHint: 'Turn the ring, or swipe up or down to open and close the illustrated iris.',
+  cameraTrialSummary: 'GRIT N is free · {n} trial shots with each other camera',
   onbCharactersTitle: '8 Cameras.\n8 Characters.',
   onbCharactersSubtitle: 'A different character for every shot.',
   onbTrialTitle: 'Try Every Camera.',
@@ -109,7 +123,7 @@ const en = {
   onbSkip: 'Skip',
   onbContinue: 'Continue',
   onbStartShooting: 'Start Shooting',
-  onbApertureHint: 'Turn the aperture to explore this camera.',
+  onbApertureHint: 'Turn here to adjust the aperture. ↓',
   onbFirstPhotoHint: 'Tap the thumbnail to see your first photo.',
 
   // Paywall
@@ -201,7 +215,21 @@ const zh: Record<keyof typeof en, string> = {
   legalSupport: '支持',
 
   onbApertureTitle: '光圈，尽在掌握。',
-  onbApertureSubtitle: '为 iPhone 摄影打造的连续光圈控制。',
+  onbApertureSubtitle: '转动光圈，让每一次拍摄多一点自己的决定。',
+  onbQualityTitle: '让照片，\n保留相机的质感。',
+  onbQualitySubtitle: '自然的明暗，细腻的层次，各有性格的色彩。',
+  onbFixedTitle: '从光圈，认识摄影。',
+  onbFixedSubtitle: '当前镜头为固定光圈，保留真实光学成像。',
+  onbFixedBadge: '固定光圈',
+  onbFixedNote: '认识不同相机的性格，然后拍下你的第一张照片。',
+  onbStructureDemo: '转动光圈环 · 光圈结构演示',
+  onbHardwareNote: '支持可变光圈的镜头可调节；固定光圈镜头保留实际光圈。',
+  onbCameraCount: '{n} 台相机，{n} 种性格。',
+  onbBack: '上一步',
+  onbReplay: '相机入门',
+  onbRingLabel: '光圈环结构演示',
+  onbRingHint: '转动光圈环；使用屏幕阅读器时，上下轻扫可开合演示叶片。',
+  cameraTrialSummary: 'GRIT N 永久免费 · 其他相机各试拍 {n} 张',
   onbCharactersTitle: '8 台相机。\n8 种性格。',
   onbCharactersSubtitle: '每一次按下快门，都有不同的性格。',
   onbTrialTitle: '试试每一台相机。',
@@ -212,7 +240,7 @@ const zh: Record<keyof typeof en, string> = {
   onbSkip: '跳过',
   onbContinue: '继续',
   onbStartShooting: '开始拍摄',
-  onbApertureHint: '转动光圈，探索这台相机。',
+  onbApertureHint: '转动这里，调整光圈。↓',
   onbFirstPhotoHint: '点击缩略图，看看你的第一张作品。',
 
   paywallTitle: '解锁全部相机。',
@@ -255,5 +283,5 @@ export function t(key: StringKey): string {
 
 /** Look up a string with `{n}`-style numeric substitution (trial badge counts). */
 export function tf(key: StringKey, n: number): string {
-  return STRINGS[appLang][key].replace('{n}', String(n));
+  return STRINGS[appLang][key].replace(/\{n\}/g, String(n));
 }
