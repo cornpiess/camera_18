@@ -26,6 +26,10 @@ enum CameraEngineError: String, Error {
   case apertureNotReady = "ERR_APERTURE_NOT_READY"
   case photoReadDenied = "ERR_PHOTO_READ_DENIED"
   case apertureUnsupported = "ERR_APERTURE_UNSUPPORTED"
+  case photoPreviewMissing = "ERR_PHOTO_PREVIEW_MISSING"
+  case photoPreviewDecode = "ERR_PHOTO_PREVIEW_DECODE"
+  case photoPreviewCopy = "ERR_PHOTO_PREVIEW_COPY"
+  case photoPreviewRead = "ERR_PHOTO_PREVIEW_READ"
 }
 
 private extension CameraEngineError {
@@ -44,6 +48,10 @@ private extension CameraEngineError {
     case .apertureNotReady: return "The physical aperture has not reached the requested position."
     case .photoReadDenied: return "Photo access is needed to finish the saved original."
     case .apertureUnsupported: return "Variable aperture is not available through a supported public API on this device."
+    case .photoPreviewMissing: return "The latest photo record or its saved file is missing."
+    case .photoPreviewDecode: return "The saved photo could not be decoded."
+    case .photoPreviewCopy: return "The photo preview file could not be prepared."
+    case .photoPreviewRead: return "The saved photo could not be retrieved from Photos."
     }
   }
 }

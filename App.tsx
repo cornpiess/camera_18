@@ -2,6 +2,7 @@
 // error from the imports below (native module resolution included) is already captured.
 import { recordDiag } from './src/utils/diagLog';
 import { settleCaptureReservation, canRequestCapture, captureRecoveryAction } from './src/camera/captureReceipts';
+import { photoPreviewFailureKey } from './src/camera/photoPreviewFailure';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
@@ -1714,8 +1715,9 @@ function CameraAppScreen(): React.JSX.Element {
                             saveCameraState({ lastThumbUri: thumbnail });
                           }
                         }).catch((error: unknown) => {
-                          recordDiag('error', `photo viewer: ${error instanceof Error ? error.message : String(error)}`);
-                          showTransientError(t('photoUnavailable'));
+                          const code = error instanceof CameraEngineError ? error.code : 'ERR_NATIVE_FAILURE';
+                          recordDiag('error', `photo viewer: ${code}: ${error instanceof Error ? error.message : String(error)}`);
+                          showTransientError(`${t(photoPreviewFailureKey(code))}\n${code}`);
                         })
                           .finally(() => { photoViewerOpenRef.current = false; });
                       }}

@@ -109,6 +109,10 @@ export type CameraEngineErrorCode =
   | 'ERR_APERTURE_NOT_READY'
   | 'ERR_PHOTO_READ_DENIED'
   | 'ERR_APERTURE_UNSUPPORTED'
+  | 'ERR_PHOTO_PREVIEW_MISSING'
+  | 'ERR_PHOTO_PREVIEW_DECODE'
+  | 'ERR_PHOTO_PREVIEW_COPY'
+  | 'ERR_PHOTO_PREVIEW_READ'
   | 'ERR_NATIVE_FAILURE';
 
 export class CameraEngineError extends Error {

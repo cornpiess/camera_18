@@ -436,11 +436,8 @@ final class CameraPhotoStore {
       let isLatest = (diagnostics["capturedAt"] as? Double ?? 0) >= (previous?["capturedAt"] as? Double ?? 0)
       let source = CGImageSourceCreateWithURL(url as CFURL, nil)
       let type = source.flatMap { CGImageSourceGetType($0) }.map { $0 as String } ?? "public.jpeg"
-      // The extension must name the bytes' real container: the viewer decodes via
-      // UIImage(contentsOfFile:), which maps the decoder from the file extension —
-      // a HEIC stream named ".heif" fails that mapping on device (real-device
-      // report: viewer rejected every fresh delivery with "full-size photo
-      // unavailable" while the file itself was intact).
+      // Name the delivery copy after its detected container. A generic viewer
+      // error alone does not establish an extension/codec incompatibility.
       let containerExtension = type == "public.heic" ? "heic" : (type == "public.heif" ? "heif" : "jpg")
       let final = CameraTempFiles.makeFinalURL(pathExtension: containerExtension)
       let thumb = CameraTempFiles.makeThumbURL()
@@ -473,6 +470,7 @@ final class CameraPhotoStore {
       if !fm.fileExists(atPath: persistent.path) { try fm.copyItem(at: final, to: persistent) }
       facts["profileName"] = profile(job)["displayName"] ?? profile(job)["name"]
       facts["fileUri"] = persistent.absoluteString
+      facts["fileName"] = persistent.lastPathComponent
       facts["thumbnailUri"] = thumbURI
       facts["assetLocalIdentifier"] = job.assetID ?? ""
       facts["codec"] = type
@@ -486,8 +484,8 @@ final class CameraPhotoStore {
       try persistOutcome(facts, id: job.id)
       // Only derived full-size copies are cleaned. Original-only archives are never automatic cleanup targets.
       let copies = (try? fm.contentsOfDirectory(at: latestDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-      let latestURI = isLatest ? persistent.absoluteString : previous?["fileUri"] as? String
-      for copy in copies where copy != persistent && copy.absoluteString != latestURI && copy.pathExtension != "json" {
+      let latestFile: URL? = isLatest ? persistent : previous.flatMap { CameraPhotoFiles.latestFile(in: latestDirectory, facts: $0) }
+      for copy in copies where copy != persistent && copy != latestFile && copy.pathExtension != "json" {
         try? fm.removeItem(at: copy)
       }
       NSLog("[CameraEngine][Photo] id=%@ delivery=%@ dimensions=%@x%@", job.id,
@@ -643,8 +641,14 @@ final class CameraPhotoStore {
       facts.removeValue(forKey: "fileUri"); facts.removeValue(forKey: "thumbnailUri")
     }
     if facts["previewDeleted"] as? Bool == true { return facts }
-    guard let uri = facts["fileUri"] as? String, let file = URL(string: uri), file.isFileURL,
-          fm.fileExists(atPath: file.path) else { return nil }
+    // A missing local copy must not discard the asset ID needed for Photos recovery.
+    let latestDirectory = manifest.deletingLastPathComponent()
+    if let file = CameraPhotoFiles.latestFile(in: latestDirectory, facts: facts) {
+      facts["fileUri"] = file.absoluteString
+      facts["fileName"] = file.lastPathComponent
+    } else { facts.removeValue(forKey: "fileUri") }
+    let thumbnail = CameraTempFiles.persistedLatestThumbnailPath()
+    if fm.fileExists(atPath: thumbnail.path) { facts["thumbnailUri"] = thumbnail.absoluteString }
     return facts
   }
   func latest(_ completion: @escaping ([String: Any]?) -> Void) {
@@ -657,6 +661,108 @@ final class CameraPhotoStore {
       .appendingPathComponent(id).appendingPathExtension("json")
   }
 
+  private typealias ViewerSnapshot = (file: URL, facts: [String: Any], image: UIImage)
+
+  /// ImageIO reads the actual container. Keep EXIF orientation in the fallback,
+  /// including mirrored orientations, rather than displaying raw sensor pixels.
+  private func decodedPhoto(at file: URL) -> UIImage? {
+    if let image = UIImage(contentsOfFile: file.path) { return image }
+    guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+          let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+    let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+    let exif = properties?[kCGImagePropertyOrientation as String] as? Int ?? 1
+    let orientations: [UIImage.Orientation] = [.up, .upMirrored, .down, .downMirrored, .leftMirrored, .right, .rightMirrored, .left]
+    return UIImage(cgImage: cg, scale: 1, orientation: orientations[min(8, max(1, exif)) - 1])
+  }
+
+  /// Queue-owned, one recovery attempt. Read only the exact asset saved for this
+  /// exposure; never substitute another library photo, a thumbnail or a clean source.
+  private func restoreViewerPhoto(_ facts: [String: Any], completion: @escaping (Result<[String: Any], CameraEngineError>) -> Void) {
+    guard let id = facts["jobID"] as? String, UUID(uuidString: id) != nil,
+          let assetID = facts["assetLocalIdentifier"] as? String, !assetID.isEmpty else {
+      completion(.failure(.photoPreviewMissing)); return
+    }
+    Self.authorize {
+      self.queue.async {
+        guard Self.canReadOwnPhotos else { completion(.failure(.photoReadDenied)); return }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject else {
+          // Limited access and deletion are indistinguishable here. Keep the record.
+          completion(.failure(.photoPreviewRead)); return
+        }
+        let options = PHImageRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        let manager = PHImageManager.default()
+        var finished = false // read/write only on photo-store queue
+        let request = manager.requestImageDataAndOrientation(for: asset, options: options) { data, _, _, info in
+          self.queue.async {
+            guard !finished else { return }
+            finished = true
+            guard let data, info?[PHImageErrorKey] == nil else {
+              completion(.failure(.photoPreviewRead)); return
+            }
+            do {
+              let latestDirectory = self.directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest", isDirectory: true)
+              try self.fm.createDirectory(at: latestDirectory, withIntermediateDirectories: true)
+              let file = latestDirectory.appendingPathComponent(id).appendingPathExtension(Self.imageFileExtension(for: data))
+              try data.write(to: file, options: .atomic)
+              guard self.decodedPhoto(at: file) != nil else { completion(.failure(.photoPreviewDecode)); return }
+              var restored = facts
+              restored["fileName"] = file.lastPathComponent
+              restored["fileUri"] = file.absoluteString
+              // An older Photos download must never overwrite a newer delivery or
+              // resurrect an explicitly deleted preview.
+              if let current = self.latestFacts(), current["jobID"] as? String == id,
+                 current["previewDeleted"] as? Bool != true {
+                try JSONSerialization.data(withJSONObject: restored).write(to: latestDirectory.appendingPathComponent("latest.json"), options: .atomic)
+              }
+              completion(.success(restored))
+            } catch { completion(.failure(.photoPreviewCopy)) }
+          }
+        }
+        self.queue.asyncAfter(deadline: .now() + 30) {
+          guard !finished else { return }
+          finished = true
+          manager.cancelImageRequest(request)
+          completion(.failure(.photoPreviewRead))
+        }
+      }
+    }
+  }
+
+  private func prepareViewerSnapshot(_ facts: [String: Any], profileNames: [String: String],
+                                     allowRecovery: Bool = true, completion: @escaping (Result<ViewerSnapshot, CameraEngineError>) -> Void) {
+    let cache = fm.temporaryDirectory.appendingPathComponent("Camera18Viewer", isDirectory: true)
+    do {
+      let latestDirectory = directory.deletingLastPathComponent().appendingPathComponent("Camera18Latest", isDirectory: true)
+      guard let source = CameraPhotoFiles.latestFile(in: latestDirectory, facts: facts) else { throw CameraEngineError.photoPreviewMissing }
+      try? fm.removeItem(at: cache)
+      try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+      let type = CGImageSourceCreateWithURL(source as CFURL, nil).flatMap { CGImageSourceGetType($0) }.map { $0 as String }
+      let ext = type == "public.heic" ? "heic" : (type == "public.heif" ? "heif" : "jpg")
+      let file = cache.appendingPathComponent("photo").appendingPathExtension(ext)
+      try fm.copyItem(at: source, to: file)
+      guard let image = decodedPhoto(at: file) else { throw CameraEngineError.photoPreviewDecode }
+      var snapshotFacts = facts
+      snapshotFacts["fileUri"] = source.absoluteString
+      if snapshotFacts["profileName"] == nil, let id = facts["profileID"] as? String { snapshotFacts["profileName"] = profileNames[id] }
+      completion(.success((file, snapshotFacts, image)))
+    } catch {
+      try? fm.removeItem(at: cache)
+      let failure = error as? CameraEngineError ?? .photoPreviewCopy
+      if allowRecovery && (failure == .photoPreviewMissing || failure == .photoPreviewDecode),
+         let assetID = facts["assetLocalIdentifier"] as? String, !assetID.isEmpty {
+        restoreViewerPhoto(facts) { result in
+          switch result {
+          case .success(let restored): self.prepareViewerSnapshot(restored, profileNames: profileNames, allowRecovery: false, completion: completion)
+          case .failure(let error): completion(.failure(error))
+          }
+        }
+      } else { completion(.failure(failure)) }
+    }
+  }
+
   /// Pin a full-size copy before presentation. Delivering another pending photo
   /// can clean derived latest files without changing/deleting this viewer's image.
   func showLatest(profileNames: [String: String], fallbackPresenter: @escaping () -> UIViewController?, completion: @escaping (Result<[String: Any], CameraEngineError>) -> Void) {
@@ -664,75 +770,44 @@ final class CameraPhotoStore {
       guard !self.viewerOpening, !CameraOrientationSubscriber.viewingPhoto else { completion(.failure(.captureBusy)); return }
       self.viewerOpening = true
       self.queue.async {
-        var snapshot: (URL, [String: Any], UIImage)?
-        var snapshotError: CameraEngineError?
         let cache = self.fm.temporaryDirectory.appendingPathComponent("Camera18Viewer", isDirectory: true)
-        do {
-          // Distinct failure codes per stage: TestFlight has no console, so the JS
-          // banner naming the code is the only production channel that tells these
-          // apart (missing delivery record vs. decode failure vs. presenter).
-          guard var facts = self.latestFacts() else { throw CameraEngineError.saveFailed }
-          if facts["previewDeleted"] as? Bool == true {
-            // The latest photo was deleted in Photos — settle as a deletion, not a
-            // failure: the JS thumbnail flow then clears the chip exactly as if the
-            // viewer's own delete button had been used.
-            let id = facts["captureID"] as? String ?? ""
-            DispatchQueue.main.async {
-              self.viewerOpening = false
-              completion(.success(["deleted": true, "captureID": id]))
-            }
-            return
-          }
-          guard let uri = facts["fileUri"] as? String,
-                let source = URL(string: uri), source.isFileURL else { throw CameraEngineError.saveFailed }
-          try? self.fm.removeItem(at: cache) // no viewer is active; removes a crash's stale copy
-          try self.fm.createDirectory(at: cache, withIntermediateDirectories: true)
-          // Name the cache file by the bytes' REAL container, never by the on-disk
-          // extension: captures delivered before the extension fix still sit in
-          // Camera18Latest as HEIC bytes under a ".heif" name, and UIImage picks
-          // its decoder from the path.
-          let detectedType = CGImageSourceCreateWithURL(source as CFURL, nil)
-            .flatMap { CGImageSourceGetType($0) }.map { $0 as String }
-          let cacheExtension = detectedType == "public.heic" ? "heic"
-            : (detectedType == "public.heif" ? "heif" : "jpg")
-          let file = cache.appendingPathComponent("photo").appendingPathExtension(cacheExtension)
-          try self.fm.copyItem(at: source, to: file)
-          // Extension-agnostic fallback: if UIImage still refuses the file,
-          // decode straight from the container (content sniffing, no path hint).
-          var image = UIImage(contentsOfFile: file.path)
-          if image == nil, let container = CGImageSourceCreateWithURL(file as CFURL, nil),
-             let decoded = CGImageSourceCreateImageAtIndex(container, 0, nil) {
-            image = UIImage(cgImage: decoded)
-          }
-          guard let image = image else { throw CameraEngineError.processingFailed }
-          if facts["profileName"] == nil, let id = facts["profileID"] as? String { facts["profileName"] = profileNames[id] }
-          snapshot = (file, facts, image)
-        } catch {
-          try? self.fm.removeItem(at: cache)
-          // Preserve the thrown code — swallowing it here once collapsed every
-          // snapshot failure onto the presenter's ERR_NO_ACTIVE_VIEW and hid the
-          // real stage (real-device report: same code twice, two different bugs).
-          snapshotError = error as? CameraEngineError ?? .processingFailed
+        guard let facts = self.latestFacts() else {
+          DispatchQueue.main.async { self.viewerOpening = false; completion(.failure(.photoPreviewMissing)) }
+          return
         }
-        let loaded = snapshot
-        let loadFailure = snapshotError
-        DispatchQueue.main.async {
-          self.viewerOpening = false
-          guard let (file, facts, image) = loaded else { completion(.failure(loadFailure ?? .processingFailed)); return }
-          // Presenting onto a mid-transition controller is legal (UIKit queues it),
-          // and a presented-chain tail may legitimately have no loaded view — the
-          // old triple guard (dismiss/present/window) rejected a presenter the
-          // system would have happily used. Only a missing presenter is fatal.
-          guard let presenter = self.presenter() ?? fallbackPresenter() else { completion(.failure(.noActiveView)); return }
-          let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
-            self.deleteViewedPhoto(facts, completion: callback)
-          }, onClose: { deleted in
-            // Viewer and share sheet have released their ownership before removal.
-            self.queue.async { try? self.fm.removeItem(at: cache) }
-            completion(.success(["deleted": deleted, "captureID": facts["captureID"] ?? ""]))
-          })
-          CameraOrientationSubscriber.viewingPhoto = true
-          presenter.present(viewer, animated: !UIAccessibility.isReduceMotionEnabled)
+        if facts["previewDeleted"] as? Bool == true {
+          // The latest photo was deleted in Photos — settle as a deletion, not a
+          // failure: the JS thumbnail flow then clears the chip exactly as if the
+          // viewer's own delete button had been used.
+          let id = facts["captureID"] as? String ?? ""
+          DispatchQueue.main.async {
+            self.viewerOpening = false
+            completion(.success(["deleted": true, "captureID": id]))
+          }
+          return
+        }
+        self.prepareViewerSnapshot(facts, profileNames: profileNames) { result in
+          DispatchQueue.main.async {
+            self.viewerOpening = false
+            let snapshot: ViewerSnapshot
+            switch result {
+            case .success(let value): snapshot = value
+            case .failure(let error): completion(.failure(error)); return
+            }
+            let (file, facts, image) = snapshot
+            // Resolve presentation separately from file loading: a missing
+            // controller must never be reported as a photo/codec failure.
+            guard let presenter = self.presenter() ?? fallbackPresenter() else { completion(.failure(.noActiveView)); return }
+            let viewer = CameraPhotoViewer(file: file, facts: facts, image: image, removePhoto: { callback in
+              self.deleteViewedPhoto(facts, completion: callback)
+            }, onClose: { deleted in
+              // Viewer and share sheet have released their ownership before removal.
+              self.queue.async { try? self.fm.removeItem(at: cache) }
+              completion(.success(["deleted": deleted, "captureID": facts["captureID"] ?? ""]))
+            })
+            CameraOrientationSubscriber.viewingPhoto = true
+            presenter.present(viewer, animated: !UIAccessibility.isReduceMotionEnabled)
+          }
         }
       }
     }

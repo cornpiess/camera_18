@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-30 最近照片读取与故障诊断修复
+
+本次确认的代码缺陷：App.tsx 恢复 viewer 入口时 catch 只显示 photoUnavailable，原生的文件、解码、presenter 等错误再次被同一句 Full-size 提示掩盖；latestFacts 直接检查持久化的绝对 fileUri，容器地址变化时即使 Camera18Latest 内文件仍在也返回 nil，连恢复需要的资产 ID 都被丢弃。晚到旧任务的清理也用旧绝对 URI 比较，可能删除当前最新副本。这些是源码可确定的缺陷；没有本次设备的具体错误码，不能认定就是本次实机失败的唯一原因，历史扩展名/presenter 推断同样不能代替实机证据。
+
+修复：CameraPhotoFiles 按当前 Application Support 目录解析相对文件名，兼容旧绝对 URI 与 jobID 文件名；清理使用同一解析结果。缺本地副本时保留记录，只按对应 assetLocalIdentifier 向 Photos 请求 current 完整成片（允许 iCloud 下载、必要时申请读取权限、30 秒超时、一次恢复、不重新入库），恢复结果不得覆盖较新记录或删除标记。ImageIO 解码兜底保留 EXIF 方向。原始图像/配方/成像质量未调整。JS 按 missing/decode/copy/read/permission/window/busy 分开提示并显示错误码。
+
+回归命令 `node scripts/photo-preview-check.js`：执行生产 TS 提示映射；有 Swift 的机器同时运行生产 Foundation 文件定位器的容器迁移、旧 .heif、文件名、jobID、缺失及路径约束测试。本环境无 Swift，原生路径测试明确跳过；Swift 类型、Photos 恢复、viewer 打开及缩放仍待 CI/普通 iPhone 真机验证。不得把静态检查通过当成实机问题已解决。
+
 ## 2026-10-29 恢复应用内最近照片查看
 
 用户要求完整查看最近照片，缩略图重新连接 CameraPhotoViewer：全尺寸固定快照、缩放、分享、信息与 Photos 删除沿用现有实现。保留 GLM 的文件容器检测与分阶段错误处理；presenter 增加附着相机视图的 responder 链及 Expo 当前控制器兜底。历史 ERR_NO_ACTIVE_VIEW 可能包含被吞掉的快照错误，最新 presenter 修复尚无真机证据，不宣称具体根因已确认。CI 编译及设备上的打开、缩放、横竖屏、分享、删除、后台恢复均待验收。
